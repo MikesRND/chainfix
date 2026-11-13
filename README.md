@@ -3,7 +3,7 @@
 
 [![CI](https://github.com/pydefi/chainfix/actions/workflows/tox.yml/badge.svg)](https://github.com/pydefi/chainfix/actions/workflows/tox.yml)
 [![Coverage Status](https://img.shields.io/badge/coverage-93%25-brightgreen)](https://github.com/pydefi/chainfix)
-[![Python Version](https://img.shields.io/badge/python-3.8%2B-blue)](https://github.com/pydefi/chainfix)
+[![Python Version](https://img.shields.io/badge/python-3.12%2B-blue)](https://github.com/pydefi/chainfix)
 [![License](https://img.shields.io/github/license/pydefi/chainfix)](https://github.com/pydefi/chainfix/blob/main/LICENSE)
 
 Chainfix provides a way to represent numbers and perform simple math operations using fixed-point data types.
@@ -176,6 +176,9 @@ Note that resulting data type has insufficinet range to represent the value pi.
 # Contributing
 
 ## Package Installation
+
+Python 3.12 or newer is required. The scalar package has no runtime dependencies.
+
 ```bash
 # Create virtual environment (recommended)
 python3 -m venv venv
@@ -184,21 +187,34 @@ source venv/bin/activate
 # Install in development mode
 pip install -e .
 
-# Install with testing dependencies
-pip install -e .[dev]  # if dev dependencies are defined
+# Install testing tools
+pip install pytest pytest-cov tox
 ```
 
 ## Testing
+
+Running bare `tox` requires both Python 3.12 and Python 3.15 to be installed and
+discoverable by tox. Use `tox -e py312-nonumpy` to run with Python 3.12 alone.
+Missing interpreters are treated as errors so an incomplete matrix is visible.
+
 ```bash
 # Run all tests
 pytest
 
-# Run tests with tox (multiple Python versions)
+# Run the supported CI environments against an installed wheel
 tox
+
+# Run just the scalar-only Python 3.12 environment
+tox -e py312-nonumpy
 ```
 
+| Tox environment | Python | NumPy test dependency |
+| --- | --- | --- |
+| `py312-min` | 3.12 | Exactly 2.5.0 |
+| `py315-latest` | 3.15 | Latest compatible stable release, >=2.5 |
+| `py312-nonumpy` | 3.12 | Not installed |
 
-
-
-
+All three environments currently run the scalar suite. NumPy is a test dependency
+only; the optional array interface will be introduced separately. CI uploads each
+environment's coverage with a distinct flag, which Codecov combines for the commit.
 

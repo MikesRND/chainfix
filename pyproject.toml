@@ -9,7 +9,7 @@ authors = [{name = "PyDefi Development Team", email = "MikesRND@users.noreply.gi
 description = "Fixed-point data types for signal processing and blockchain applications"
 readme = "README.md"
 license = {file = "LICENSE"}
-requires-python = ">=3.8"
+requires-python = ">=3.12"
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
@@ -18,12 +18,10 @@ classifiers = [
     "Topic :: Office/Business :: Financial",
     "Topic :: Scientific/Engineering :: Electronic Design Automation (EDA)",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.8",
-    "Programming Language :: Python :: 3.9",
-    "Programming Language :: Python :: 3.10",
-    "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Programming Language :: Python :: 3.15",
 ]
 keywords = ["fixed-point", "binary fixed-point", "decimal fixed-point"]
 
@@ -42,8 +40,11 @@ where = ["src"]
 version = {attr = "chainfix.__version__"}
 
 [tool.coverage.run]
-source = ["src"]
+source = ["chainfix"]
 branch = true
+
+[tool.coverage.paths]
+source = ["src/chainfix", ".tox/*/lib/python*/site-packages/chainfix", "*/site-packages/chainfix"]
 
 [tool.coverage.report]
 exclude_lines = [
