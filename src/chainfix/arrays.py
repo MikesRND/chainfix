@@ -22,6 +22,7 @@ range. Arithmetic accepts fixed-point values and integer constants, not ndarrays
 from __future__ import annotations
 
 import builtins
+from copy import deepcopy
 from dataclasses import replace
 
 try:
@@ -98,6 +99,24 @@ class Array:
 
     def __delattr__(self, name):
         raise AttributeError("Array metadata is read-only")
+
+    def __copy__(self):
+        """Copy the wrapper, sharing its integer storage and immutable format."""
+        return type(self)._from_storage(self.raw, self.format, self.is_complex)
+
+    def __deepcopy__(self, memo):
+        """Copy storage independently, preserving repeated references via memo."""
+        raw = deepcopy(self.raw, memo)
+        raw.flags.writeable = self.raw.flags.writeable
+        result = type(self)._from_storage(raw, self.format, self.is_complex)
+        memo[id(self)] = result
+        return result
+
+    def __reduce__(self):
+        # Materialize component views, but preserve dtype and all raw bits.
+        # Reconstruction must not quantize or scan an uninitialized output.
+        return (_restore_array, (type(self), self.raw.copy(order="C"), self.format,
+                                 self.is_complex, self.raw.flags.writeable))
 
     @classmethod
     def _from_storage(cls, raw, format, complex):
@@ -245,22 +264,22 @@ class Array:
         return function(*inputs, out=out)
 
     def __add__(self, other):
-        return add(self, other)
+        return add(self, other) if _supports_operand(other) else NotImplemented
 
     def __radd__(self, other):
-        return add(other, self)
+        return add(other, self) if _supports_operand(other) else NotImplemented
 
     def __sub__(self, other):
-        return subtract(self, other)
+        return subtract(self, other) if _supports_operand(other) else NotImplemented
 
     def __rsub__(self, other):
-        return subtract(other, self)
+        return subtract(other, self) if _supports_operand(other) else NotImplemented
 
     def __mul__(self, other):
-        return multiply(self, other)
+        return multiply(self, other) if _supports_operand(other) else NotImplemented
 
     def __rmul__(self, other):
-        return multiply(other, self)
+        return multiply(other, self) if _supports_operand(other) else NotImplemented
 
     def __pos__(self):
         return positive(self)
@@ -272,29 +291,42 @@ class Array:
         return absolute(self)
 
     def __eq__(self, other):
-        return equal(self, other)
+        return equal(self, other) if _supports_operand(other) else NotImplemented
 
     def __ne__(self, other):
-        return not_equal(self, other)
+        return not_equal(self, other) if _supports_operand(other) else NotImplemented
 
     def __lt__(self, other):
-        return less(self, other)
+        return less(self, other) if _supports_operand(other) else NotImplemented
 
     def __le__(self, other):
-        return less_equal(self, other)
+        return less_equal(self, other) if _supports_operand(other) else NotImplemented
 
     def __gt__(self, other):
-        return greater(self, other)
+        return greater(self, other) if _supports_operand(other) else NotImplemented
 
     def __ge__(self, other):
-        return greater_equal(self, other)
+        return greater_equal(self, other) if _supports_operand(other) else NotImplemented
 
     def __repr__(self):
         return f"Array(shape={self.shape}, format={self.format!r}, complex={self.is_complex})"
 
 
+# Keep this module/name stable: saved pickles reference this reconstruction helper.
+def _restore_array(cls, raw, format, complex, writeable):
+    result = cls._from_storage(raw, format, complex)
+    result.raw.flags.writeable = writeable
+    return result
+
+
 def _native_value(value):
     return value.item() if isinstance(value, np.generic) else value
+
+
+def _supports_operand(value):
+    # Only dispatch on type here. Supported operands still pass through all
+    # format/domain validation, whose errors must not be swallowed by operators.
+    return isinstance(_native_value(value), (Array, Fixb, Ufixb, CFixb, int))
 
 
 def _from_values(values, format, complex, math):

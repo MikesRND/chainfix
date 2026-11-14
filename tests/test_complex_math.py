@@ -560,3 +560,17 @@ def test_copy_and_pickle_preserve_exact_storage_without_context(cls, monkeypatch
     if cls is TaggedComplex:
         assert shallow.tag is z.tag and shallow.metadata is z.metadata
         assert deep.tag is not z.tag and deep.metadata is not z.metadata
+
+
+def test_scalar_configuration_round_trip_under_different_context_defaults():
+    format = fmt(104, 7)
+    real = cf.Fixb.from_raw(2**100 + 1, format=format)
+    complex = cf.CFixb.from_raw(i=2**100 + 1, q=-2**100 + 3, format=format)
+    policy = cf.Math(product=format, sum=fmt(32, 4), rounding="ceil", overflow="saturate")
+    bundle = (real, complex, format, policy)
+    with cf.local_binary_context(wordlength=4, precision=0, math=cf.Math(overflow="wrap")):
+        for restored in (deepcopy(bundle), pickle.loads(pickle.dumps(bundle))):
+            assert restored == bundle
+            assert restored[0].format == restored[1].format == format
+            assert restored[0].int == real.int
+            assert (restored[1].real.int, restored[1].imag.int) == (complex.real.int, complex.imag.int)

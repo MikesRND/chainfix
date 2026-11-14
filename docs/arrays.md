@@ -63,6 +63,15 @@ itself and its `.imag` is an independent zero array with the same format and
 read-only status. Views carry no arithmetic policy. Format and container metadata
 cannot be reassigned.
 
+`copy.copy(value)` creates a new wrapper sharing the original raw storage and
+immutable format. `copy.deepcopy(value)` copies storage independently and honors
+the memo used for repeated references, including references to the same raw
+ndarray. Pickling also preserves exact encodings, format, dtype, shape, complexity,
+and read-only status. Copying and unpickling restore storage directly without
+quantization, context lookup, or a range scan. Deep copies and pickle round trips
+materialize component views as contiguous arrays; shared backing storage between
+distinct views is not preserved.
+
 External writers, including writes through `.raw`, **must preserve the declared
 value range, dtype, shape, and supported layout**. In particular, a subword format
 such as signed 12-bit data in int16 storage still requires encodings in
@@ -90,10 +99,17 @@ arrays support `[()]` for a scalar and `[...]` for a view. Empty arrays are vali
 Elementary operations broadcast logical shapes. Operands may be Chainfix arrays,
 binary fixed-point scalars, Python integers (including bool), or NumPy integer
 and boolean scalars. Integer constants use the scalar contract's minimal signed
-format at precision zero. Bare ndarray/list operands are ambiguous and rejected:
-use `array` for numeric values or `from_raw` for encodings. Float, Fraction,
-Decimal, and Python complex arithmetic/comparison operands also require explicit
-fixed-point construction.
+format at precision zero. Bare ndarray operands are ambiguous and rejected in
+both operand orders: use `array` for numeric values or `from_raw` for encodings.
+Lists, floats, Fraction, Decimal, and Python complex operands require explicit
+fixed-point construction to participate in fixed-point arithmetic/comparison.
+
+Python operator methods return `NotImplemented` for unsupported operand types,
+allowing reflected dispatch. Consequently `z == None` and `z == "raise"` return
+`False`, and the corresponding `!=` expressions return `True`. Unsupported
+arithmetic such as `z + 1.5` still raises `TypeError`. Bare ndarrays remain errors
+through NumPy dispatch. Explicit `cfa.*` functions and NumPy ufuncs raise
+`TypeError` for unsupported operands, including sentinel equality comparisons.
 
 ## Arithmetic and policy boundaries
 
@@ -120,10 +136,12 @@ input produces a signed 17-bit format in **int32** storage, even if current
 samples would fit int16. Unsigned absolute value preserves its format.
 
 `equal`, `not_equal`, `less`, `less_equal`, `greater`, and `greater_equal`, and the
-corresponding operators, return boolean ndarrays. Comparisons are exact and
-independent of context, even across precisions too far apart for arithmetic
-alignment. Equality includes both complex components. Comparison output buffers
-are not yet supported.
+corresponding operators, return boolean ndarrays for supported operand types.
+Comparisons are exact and independent of context, even across precisions too far
+apart for arithmetic alignment. Equality includes both complex components.
+Comparison output buffers are not yet supported. Because supported comparisons remain elementwise,
+membership checks between distinct arrays can still raise an ambiguous-truth
+error.
 
 ## Reusable destinations and checked domains
 

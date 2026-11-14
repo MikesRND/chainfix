@@ -14,9 +14,11 @@
 
 """Array construction, storage contracts, broadcasting and NumPy dispatch."""
 
+from copy import copy, deepcopy
 from decimal import Decimal
 from fractions import Fraction
 import operator
+import pickle
 
 import pytest
 
@@ -373,11 +375,217 @@ def test_rejected_numpy_dispatch_and_operands():
         with pytest.raises(TypeError):
             call()
     for other in (np.array([1, 2]), [1, 2], 1.5, 1j, Fraction(1, 2), Decimal("1"), object()):
-        for operation in (operator.add, operator.sub, operator.mul, operator.eq):
+        for operation in (operator.add, operator.sub, operator.mul):
             with pytest.raises(TypeError):
                 operation(x, other)
             with pytest.raises(TypeError):
                 operation(other, x)
+
+
+@pytest.mark.parametrize("method", ("__add__", "__radd__", "__sub__", "__rsub__",
+                                    "__mul__", "__rmul__", "__eq__", "__ne__",
+                                    "__lt__", "__le__", "__gt__", "__ge__"))
+def test_operators_return_notimplemented_for_unsupported_types(method):
+    z = cfa.array([1j, 1], format=fmt())
+    for other in (None, "raise", object(), [1, 2], 1.5, 1j, Fraction(1, 2),
+                  Decimal("1"), np.zeros(2), np.float64(1.5), np.timedelta64(1, "D")):
+        assert getattr(z, method)(other) is NotImplemented
+
+
+def test_unsupported_equality_and_sentinel_membership():
+    z = cfa.array([1j, 1], format=fmt())
+    for other in (None, "raise", object(), [1, 2], 1.5, 1j, Fraction(1, 2), Decimal("1")):
+        assert (z == other) is False
+        assert (other == z) is False
+        assert (z != other) is True
+        assert (other != z) is True
+    assert "raise" not in [z]
+    assert z not in [None, "raise"]
+    # Supported comparisons remain elementwise; membership between distinct
+    # arrays does not turn into scalar equality as a side effect of dispatch.
+    with pytest.raises(ValueError, match="ambiguous"):
+        z in [cfa.array([1j, 1], format=fmt())]
+
+
+def test_foreign_reflected_arithmetic_and_comparisons():
+    class Foreign:
+        def __radd__(self, other):
+            return "radd", id(other)
+
+        def __rsub__(self, other):
+            return "rsub", id(other)
+
+        def __rmul__(self, other):
+            return "rmul", id(other)
+
+        def __eq__(self, other):
+            return "eq", id(other)
+
+        def __ne__(self, other):
+            return "ne", id(other)
+
+        def __lt__(self, other):
+            return "lt", id(other)
+
+        def __le__(self, other):
+            return "le", id(other)
+
+        def __gt__(self, other):
+            return "gt", id(other)
+
+        def __ge__(self, other):
+            return "ge", id(other)
+
+    z = cfa.array([1j, 1], format=fmt())
+    foreign = Foreign()
+    for operation, reflected in ((operator.add, "radd"), (operator.sub, "rsub"),
+                                 (operator.mul, "rmul"), (operator.eq, "eq"),
+                                 (operator.ne, "ne"), (operator.lt, "gt"),
+                                 (operator.le, "ge"), (operator.gt, "lt"),
+                                 (operator.ge, "le")):
+        assert operation(z, foreign) == (reflected, id(z))
+
+
+@pytest.mark.parametrize("complex", (False, True))
+@pytest.mark.parametrize("operation", (operator.add, operator.sub, operator.mul,
+                                       operator.eq, operator.ne, operator.lt,
+                                       operator.le, operator.gt, operator.ge))
+def test_ndarray_operands_still_raise_in_both_directions(complex, operation):
+    z = cfa.array([1, 2], format=fmt(), complex=complex)
+    for nd in (np.zeros(2), np.zeros(2, dtype=object), np.array(1)):
+        with pytest.raises(TypeError, match="operands must be"):
+            operation(z, nd)
+        with pytest.raises(TypeError, match="operands must be"):
+            operation(nd, z)
+
+
+@pytest.mark.parametrize("name", ("add", "subtract", "multiply", "equal", "not_equal",
+                                  "less", "less_equal", "greater", "greater_equal"))
+def test_explicit_and_ufunc_calls_keep_rejecting_unsupported_operands(name):
+    z = cfa.array([1j, 1], format=fmt())
+    for function in (getattr(cfa, name), getattr(np, name)):
+        for other in (None, "raise", object(), 1.5):
+            for a, b in ((z, other), (other, z)):
+                with pytest.raises(TypeError, match="operands must be"):
+                    function(a, b)
+
+
+def test_supported_operand_validation_errors_are_not_swallowed(monkeypatch):
+    z = cfa.array([1j, 1], format=fmt())
+    with pytest.raises(TypeError, match="complex ordered"):
+        z.__lt__(1)
+    with pytest.raises(ValueError, match="kernel domain"):
+        z.__add__(2**100)
+
+    def invalid_supported_operation(*args):
+        raise TypeError("supported operand validation failed")
+
+    monkeypatch.setattr(cfa, "add", invalid_supported_operation)
+    monkeypatch.setattr(cfa, "equal", invalid_supported_operation)
+    for call in (lambda: z + 1, lambda: 1 + z, lambda: z == 1):
+        with pytest.raises(TypeError, match="supported operand validation failed"):
+            call()
+
+
+@pytest.fixture(params=("real", "unsigned", "complex", "real_view", "imag_view",
+                        "scalar", "complex_scalar", "empty", "complex_empty"))
+def protocol_array(request):
+    kind = request.param
+    if kind == "unsigned":
+        raw = np.array([2**63-1, 2**60+1], dtype=np.uint64)
+        return cfa.from_raw(raw, format=fmt(63, 7, False))
+    raw = np.array([[2**60+1, -(2**63)], [7, -3]], dtype=np.int64)
+    z = cfa.from_raw(raw, format=fmt(64, 7), complex=True)
+    if kind == "complex":
+        return z
+    if kind == "real_view":
+        return z.real
+    if kind == "imag_view":
+        return z.imag
+    if kind == "complex_scalar":
+        return cfa.from_raw(raw[0], format=z.format, complex=True)
+    if kind == "scalar":
+        return cfa.from_raw(raw[:1, :1].reshape(()), format=z.format)
+    if kind.endswith("empty"):
+        return cfa.empty((2, 0), format=fmt(5, -2), complex=kind == "complex_empty")
+    # The wider dtype must survive copying, including for a subword format.
+    return cfa.from_raw(np.array([7, -3], dtype=np.int32), format=fmt(5, -2))
+
+
+def assert_same_storage_values(restored, source):
+    assert restored is not source
+    assert restored.format == source.format
+    assert restored.is_complex == source.is_complex
+    assert restored.shape == source.shape
+    assert restored.raw.dtype == source.raw.dtype
+    assert restored.raw.flags.writeable == source.raw.flags.writeable
+    np.testing.assert_array_equal(restored.raw, source.raw)
+    with pytest.raises(AttributeError):
+        restored._format = fmt()
+
+
+@pytest.mark.parametrize("readonly", (False, True))
+def test_shallow_and_deep_array_copies(protocol_array, readonly):
+    source = protocol_array
+    source.raw.flags.writeable = not readonly
+    with cf.local_binary_context(wordlength=4, precision=0, math=cf.Math(overflow="wrap")):
+        shallow, deep = copy(source), deepcopy(source)
+    for restored in (shallow, deep):
+        assert_same_storage_values(restored, source)
+        assert restored.format is source.format
+    assert shallow.raw is source.raw
+    assert deep.raw is not source.raw
+    assert deep.raw.flags.c_contiguous
+    assert not np.shares_memory(deep.raw, source.raw)
+    if source.size:
+        original = source.raw.flat[0]
+        if readonly:
+            for restored in (shallow, deep):
+                with pytest.raises(ValueError, match="read-only"):
+                    restored.raw.flat[0] = 0
+        else:
+            deep.raw.flat[0] = 0
+            assert source.raw.flat[0] == original
+            shallow.raw.flat[0] = 0
+            assert source.raw.flat[0] == 0
+
+
+@pytest.mark.parametrize("readonly", (False, True))
+def test_deepcopy_memo_preserves_repeated_array_and_raw_references(readonly):
+    z = cfa.array([1j, 1], format=fmt()).imag
+    z.raw.flags.writeable = not readonly
+    # Include raw first so Array must honor the copy already in the memo.
+    raw, first, repeated, shallow = deepcopy([z.raw, z, z, copy(z)])
+    assert first is repeated and first is not shallow
+    assert raw is first.raw is shallow.raw
+    assert not np.shares_memory(raw, z.raw)
+    assert raw.flags.c_contiguous and raw.flags.writeable == (not readonly)
+    np.testing.assert_array_equal(raw, z.raw)
+
+
+@pytest.mark.parametrize("protocol", range(pickle.HIGHEST_PROTOCOL + 1))
+@pytest.mark.parametrize("readonly", (False, True))
+def test_array_pickle_restores_exact_storage(protocol_array, readonly, protocol):
+    source = protocol_array
+    source.raw.flags.writeable = not readonly
+    with cf.local_binary_context(wordlength=4, precision=0, math=cf.Math(overflow="wrap")):
+        restored = pickle.loads(pickle.dumps(source, protocol=protocol))
+    assert_same_storage_values(restored, source)
+    assert restored.raw.flags.c_contiguous
+    assert not np.shares_memory(restored.raw, source.raw)
+
+
+def test_array_copy_and_pickle_bypass_construction_and_validation(monkeypatch):
+    source = cfa.array([0.5 + 0.25j], format=fmt(16, 14)).imag
+
+    def reject(*args, **kwargs):
+        raise AssertionError("copy/pickle must restore storage directly")
+
+    for name in ("_from_values", "from_raw", "_check_storage", "_selected_math"):
+        monkeypatch.setattr(cfa, name, reject)
+    monkeypatch.setattr(cfa.kernels, "convert", reject)
+    for restored in (copy(source), deepcopy(source), pickle.loads(pickle.dumps(source))):
+        assert_same_storage_values(restored, source)
 
 
 def test_structural_validation():
