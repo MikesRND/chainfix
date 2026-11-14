@@ -18,8 +18,10 @@ from dataclasses import dataclass
 
 
 def _integer(value: int, name: str) -> int:
-    if isinstance(value, bool) or not isinstance(value, int):
+    if isinstance(value, bool):
         raise TypeError(f"{name} must be an integer, not a boolean")
+    if not isinstance(value, int):
+        raise TypeError(f"{name} must be an integer, not {type(value).__name__}")
     return value
 
 

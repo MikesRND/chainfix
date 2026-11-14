@@ -175,6 +175,13 @@ def test_context_validation_and_conflicting_overrides(configured):
     with pytest.raises(TypeError):
         with cf.local_binary_context(cf.DecimalContext()):
             pass
+    for kwargs, message in (({"precision": "x"}, "precision must be an integer, not str"),
+                            ({"wordlength": 1.5}, "wordlength must be an integer, not float"),
+                            ({"precision": True}, "precision must be an integer, not a boolean")):
+        for build in (lambda: cf.BinaryContext(**kwargs), lambda: configured.replace(**kwargs)):
+            with pytest.raises(TypeError) as error:
+                build()
+            assert str(error.value) == message
     for kwargs in ({"wordlength": 0}, {"wordlength": True}, {"precision": 1.5}, {"math": "wrap"}):
         with pytest.raises((TypeError, ValueError)):
             cf.BinaryContext(**kwargs)
