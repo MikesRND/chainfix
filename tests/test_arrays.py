@@ -365,9 +365,9 @@ def test_unary_and_comparison_ufuncs():
 
 def test_rejected_numpy_dispatch_and_operands():
     x = cfa.array([1, 2], format=fmt())
-    for call in (lambda: np.sin(x), lambda: np.add.reduce(x), lambda: np.multiply.outer(x, x),
-                 lambda: np.add.at(x, 0, 1), lambda: np.sum(x), lambda: np.dot(x, x),
-                 lambda: np.matmul(x, x), lambda: np.concatenate([x, x]),
+    for call in (lambda: np.sin(x), lambda: np.multiply.reduce(x), lambda: np.multiply.outer(x, x),
+                 lambda: np.add.at(x, 0, 1), lambda: np.add.accumulate(x), lambda: np.prod(x),
+                 lambda: np.vdot(x, x), lambda: np.concatenate([x, x]),
                  lambda: np.add(x, x, where=False), lambda: np.add(x, x, where=np.array([True, True])),
                  lambda: np.add(x, x, dtype=np.int64), lambda: np.add(x, x, casting="unsafe"),
                  lambda: np.add(x, x, order="C"), lambda: np.equal(x, x, out=np.empty(2, dtype=bool)),

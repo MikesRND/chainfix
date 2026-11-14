@@ -230,6 +230,43 @@ def multiply_complex(ai, aq, bi, bq, *, i, q, work):
     np.add(q, work, out=q)
 
 
+def accumulate(total, term, *, term_shift, step: Format, accumulator: Format, policy,
+               scratch, work):
+    """Add one term to ``total`` and quantize to the accumulator format, in place.
+
+    ``total`` holds int64 accumulator encodings and ``term`` int64 encodings at
+    its own precision; ``step`` is their exact aligned sum format. Callers
+    preflight both alignments and the step range. ``work`` and ``scratch`` are
+    disjoint from ``total`` and ``term``.
+    """
+    shift = step.precision - accumulator.precision
+    if shift:
+        np.left_shift(total, shift, out=total)
+    if term_shift:
+        term = np.left_shift(term, term_shift, out=work)
+    np.add(total, term, out=total)
+    convert(total, step, accumulator, policy, out=total, scratch=scratch)
+
+
+def matmul(ai, aq, bi, bq):
+    """Exact int64 matrix-product components; ``None`` marks a real operand.
+
+    Callers preflight the declared full product and sum ranges, so no partial
+    sum leaves int64. The imaginary result is ``None`` for two real operands.
+    """
+    i = np.matmul(ai, bi)
+    if aq is None and bq is None:
+        return i, None
+    if aq is None:
+        return i, np.matmul(ai, bq)
+    if bq is None:
+        return i, np.matmul(aq, bi)
+    np.subtract(i, np.matmul(aq, bq), out=i)
+    q = np.matmul(ai, bq)
+    np.add(q, np.matmul(aq, bi), out=q)
+    return i, q
+
+
 def compare(a, ap, b, bp, operation):
     """Compare exactly without left alignment, even across enormous precisions."""
     if ap < bp:

@@ -36,8 +36,9 @@ formats require base 2.
 
 `Math` selects rounding, overflow, and independent `product`, `sum`, and
 `accumulator` boundaries, each either `"full"` or a binary `Format`. All default
-to full growth. `accumulator` is validated and retained by context copies but is
-reserved for the later reduction API; it has no effect on elementary operations.
+to full growth. `accumulator` has no effect on elementary operations: it selects
+the running-sum boundary of [array reductions](arrays.md#reductions), where
+`product` applies to each term and `sum` to the final result.
 
 An explicit `math=` on a constructor, conversion, or function overrides the
 active binary context for that call only:
@@ -313,6 +314,6 @@ numeric values rather than object identity, and binary context setters copy all
 supplied contexts. Decimal behavior is preserved, including unsupported arithmetic.
 
 [Arrays and the supported NumPy dispatch subset](arrays.md) are available through
-the optional arrays extra. Reductions and internal scratch-buffer reuse belong
-to later changes. Division, other bitwise operators, and transcendental functions
+the optional arrays extra, including ordered sum, dot, and matrix-product
+reductions. Division, other bitwise operators, and transcendental functions
 remain unsupported. There is no public preparation or workspace API.

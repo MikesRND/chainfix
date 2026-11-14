@@ -17,6 +17,10 @@
 Use ``array`` for numeric values and ``from_raw`` for integer encodings. External
 writers to raw storage must preserve its layout, dtype, shape, and declared value
 range. Arithmetic accepts fixed-point values and integer constants, not ndarrays.
+
+Reductions (``sum``, ``dot``, ``matmul``) quantize in three stages: product policy
+on each completed product, accumulator policy on each addition in logical order,
+then sum policy on the final result.
 """
 
 from __future__ import annotations
@@ -25,6 +29,7 @@ import builtins
 from copy import deepcopy
 from dataclasses import replace
 from decimal import Decimal
+from functools import reduce
 from numbers import Number
 import operator
 
@@ -42,8 +47,13 @@ from chainfix.format import Format, _product_format, _sum_format, _unary_format
 from chainfix.policy import FixedPointOverflowError, Math
 
 __all__ = ["Array", "array", "from_raw", "empty", "add", "subtract", "multiply",
-           "positive", "negative", "absolute", "conjugate", "mag2", "equal",
-           "not_equal", "less", "less_equal", "greater", "greater_equal"]
+           "positive", "negative", "absolute", "conjugate", "mag2", "sum", "dot",
+           "matmul", "equal", "not_equal", "less", "less_equal", "greater",
+           "greater_equal"]
+
+# Product terms materialized per component for one block of a dot/matmul
+# reduction. Blocks bound temporary storage without changing any result.
+_BLOCK_ELEMENTS = 1 << 16
 
 
 def _complex_flag(value, *, optional=False):
@@ -208,6 +218,9 @@ class Array:
     def mag2(self, *, math: Math | None = None):
         return mag2(self, math=math)
 
+    def sum(self, axis=None, *, keepdims=False, out=None, math: Math | None = None):
+        return sum(self, axis, keepdims=keepdims, out=out, math=math)
+
     def __len__(self):
         if not self.ndim:
             raise TypeError("len() of a zero-dimensional array")
@@ -231,8 +244,9 @@ class Array:
                     raise ValueError("only unit-step basic slicing is supported")
             elif isinstance(item, (bool, np.bool_)) or not isinstance(item, (int, np.integer)):
                 raise TypeError("only basic integer/slice indexing is supported")
-        ellipses = sum(item is Ellipsis for item in keys)
-        count = sum(item is not None and item is not Ellipsis for item in keys)
+        # The module-level sum is the fixed-point reduction, not the builtin.
+        ellipses = builtins.sum(item is Ellipsis for item in keys)
+        count = builtins.sum(item is not None and item is not Ellipsis for item in keys)
         if ellipses > 1 or count > self.ndim:
             raise IndexError("too many indices or ellipses for logical array shape")
         # Keep even a zero-width ellipsis: NumPy then returns a shared 0-d
@@ -255,7 +269,9 @@ class Array:
         raise TypeError("implicit ndarray conversion discards format; use raw or to_numpy()")
 
     def __array_function__(self, func, types, args, kwargs):
-        raise TypeError(f"NumPy function {func.__name__} is unsupported for fixed-point arrays")
+        if func not in _FUNCTIONS:
+            raise TypeError(f"NumPy function {func.__name__} is unsupported for fixed-point arrays")
+        return _FUNCTIONS[func](*args, **kwargs)
 
     def __array_ufunc__(self, ufunc, method, *inputs, **kwargs):
         # Leave foreign types a chance to dispatch, but keep recognized numeric
@@ -265,6 +281,8 @@ class Array:
         if any(not _supports_operand(value) and not _recognized_operand(value)
                for value in inputs + tuple(out for out in outputs if out is not None)):
             return NotImplemented
+        if ufunc is np.add and method == "reduce":
+            return _numpy_reduce(*inputs, **kwargs)
         if method != "__call__" or ufunc not in _UFUNCS:
             raise TypeError(f"NumPy {ufunc.__name__}.{method} is unsupported for fixed-point arrays")
         if kwargs.pop("where", True) is not True:
@@ -296,6 +314,12 @@ class Array:
 
     def __rmul__(self, other):
         return multiply(other, self) if _supports_operand(other) else NotImplemented
+
+    def __matmul__(self, other):
+        return matmul(self, other) if isinstance(other, Array) else NotImplemented
+
+    def __rmatmul__(self, other):
+        return matmul(other, self) if isinstance(other, Array) else NotImplemented
 
     def __pos__(self):
         return positive(self)
@@ -614,6 +638,227 @@ def mag2(value, *, out=None, math: Math | None = None):
     return _unary(value, "mag2", out, math)
 
 
+def _array_operand(value, name):
+    if not isinstance(value, Array):
+        raise TypeError(f"{name} operands must be fixed-point arrays; "
+                        "use array() or from_raw() for ndarrays")
+    return value
+
+
+def _reduction_axis(axis, ndim):
+    if axis is None:
+        return None
+    axis = _native_value(axis)
+    if isinstance(axis, bool) or not isinstance(axis, int):
+        raise TypeError("axis must be None or one integer; multi-axis reductions are unsupported")
+    if not -ndim <= axis < ndim:
+        raise np.exceptions.AxisError(axis, ndim)
+    return axis % ndim
+
+
+def _stage_format(format, complex, stage, hint=""):
+    """Check a reduction stage's declared format, naming the stage on failure."""
+    try:
+        return kernels.check_format(format, complex)
+    except ValueError as error:
+        kind = "signed" if format.signed else "unsigned"
+        raise ValueError(f"{error}; {stage} is {format.wordlength}-bit {kind}{hint}") from None
+
+
+def _accumulation(term, count, policy, complex):
+    """Return the format reached before sum policy, and the exact step format.
+
+    Full accumulation adds the conservative ceil(log2(count)) guard bits to the
+    term format and has no step. An explicit accumulator bounds every partial
+    sum, so it gains no guard bits; each addition is exact in the step format.
+    """
+    if policy.accumulator == "full":
+        guard = max(count - 1, 0).bit_length()
+        full = replace(term, wordlength=term.wordlength + guard)
+        return _stage_format(full, complex, f"the full sum of {count} terms",
+                             ". An explicit accumulator format bounds each step instead"), None
+    accumulator = _stage_format(policy.accumulator, complex, "the accumulator format")
+    precision = max(accumulator.precision, term.precision)
+    kernels.check_shift(accumulator, precision - accumulator.precision)
+    kernels.check_shift(term, precision - term.precision)
+    return accumulator, _stage_format(_sum_format(accumulator, term), False,
+                                      "each exact accumulator step")
+
+
+def _accumulate(blocks, lanes, parts, term, accumulated, step, policy):
+    """Reduce the last axis of int64 term blocks, one total per component.
+
+    Full accumulation is exact, so each block is summed by one NumPy kernel.
+    An explicit accumulator quantizes after every addition and therefore visits
+    terms one at a time, in order, vectorized across the independent lanes.
+    """
+    totals = [np.zeros(lanes, dtype=np.int64) for _ in range(parts)]
+    if step is None:
+        for block in blocks:
+            for total, values in zip(totals, block):
+                np.add(total, values.sum(axis=-1, dtype=np.int64), out=total)
+        return totals
+    scratch = kernels._ConversionScratch(lanes, lazy=True)
+    work = np.empty(lanes, dtype=np.int64)
+    shift = step.precision - term.precision
+    for block in blocks:
+        for index in range(block[0].shape[-1]):
+            for total, values in zip(totals, block):
+                kernels.accumulate(total, values[..., index], term_shift=shift, step=step,
+                                   accumulator=accumulated, policy=policy, scratch=scratch,
+                                   work=work)
+    return totals
+
+
+def _finish_reduction(totals, accumulated, target, policy, shape, out):
+    i = totals[0].reshape(shape)
+    q = totals[1].reshape(shape) if len(totals) == 2 else None
+    return _finish(i, q, accumulated, target, policy, shape, out)
+
+
+def sum(value, axis=None, *, keepdims=False, out=None, math: Math | None = None):
+    """Sum all logical samples or one logical axis.
+
+    Terms are added in logical C order under accumulator policy, then sum
+    policy selects the result format, then any destination conversion applies.
+    """
+    value = _array_operand(value, "sum")
+    policy = _selected_math(math)
+    axis = _reduction_axis(axis, value.ndim)
+    if not isinstance(keepdims, bool):
+        raise TypeError("keepdims must be a boolean")
+    if axis is None:
+        count, lanes = value.size, ()
+        shape = (1,) * value.ndim if keepdims else ()
+    else:
+        count, lanes = value.shape[axis], value.shape[:axis] + value.shape[axis + 1:]
+        shape = value.shape[:axis] + ((1,) if keepdims else ()) + value.shape[axis + 1:]
+    accumulated, step = _accumulation(value.format, count, policy, value.is_complex)
+    target, out = _prepare(accumulated, policy.sum, value.is_complex, shape, (value,), out)
+    parts = _components(value)[:1 + value.is_complex]
+    block = tuple(part.reshape(-1) if axis is None else np.moveaxis(part, axis, -1)
+                  for part in parts)
+    totals = _accumulate((block,), lanes, len(parts), value.format, accumulated, step, policy)
+    return _finish_reduction(totals, accumulated, target, policy, shape, out)
+
+
+def _matrix_parts(value, shape):
+    """int64 components as (..., rows, columns); a real operand has no imaginary part."""
+    i, q = _components(value)
+    return i.reshape(shape), q.reshape(shape) if value.is_complex else None
+
+
+def _product_blocks(a, b, lanes, count, full, term, policy):
+    """Yield completed products, quantized by product policy, as lanes + (block,).
+
+    Operands are (..., m, k) and (..., k, n) component pairs. Each yielded tuple
+    reuses the previous block's storage; consume it before requesting the next.
+    """
+    complex = a[1] is not None or b[1] is not None
+    # Put the summed axis last and give each operand the other's lane axis.
+    a = [None if part is None else part[..., :, None, :] for part in a]
+    b = [None if part is None else np.swapaxes(part, -1, -2)[..., None, :, :] for part in b]
+    width = max(1, min(count, _BLOCK_ELEMENTS // max(1, reduce(operator.mul, lanes, 1))))
+    parts = ()
+    for start in range(0, count, width):
+        ai, aq, bi, bq = (None if part is None else part[..., start:start + width]
+                          for part in a + b)
+        shape = lanes + (ai.shape[-1],)
+        if not parts or parts[0].shape != shape:
+            parts = tuple(np.empty(shape, dtype=np.int64) for _ in range(1 + complex))
+            work = np.empty(shape, dtype=np.int64) if complex else None
+            scratch = kernels._ConversionScratch(shape, lazy=True)
+        if complex:
+            zero = np.int64(0)
+            kernels.multiply_complex(ai, zero if aq is None else aq, bi, zero if bq is None else bq,
+                                     i=parts[0], q=parts[1], work=work)
+        else:
+            np.multiply(ai, bi, out=parts[0])
+        if full != term:
+            for part in parts:
+                kernels.convert(part, full, term, policy, out=part, scratch=scratch)
+        yield parts
+
+
+def _matmul(a, b, out, math, name):
+    a, b = _array_operand(a, name), _array_operand(b, name)
+    policy = _selected_math(math)
+    if not a.ndim or not b.ndim:
+        raise ValueError(f"{name} requires operands with at least one dimension")
+    # NumPy's logical rules: a 1-D left operand is a row and a 1-D right operand
+    # a column; the added axis is removed from the result. Leading axes broadcast.
+    a_shape = a.shape if a.ndim > 1 else (1,) + a.shape
+    b_shape = b.shape if b.ndim > 1 else b.shape + (1,)
+    count = a_shape[-1]
+    if count != b_shape[-2]:
+        raise ValueError(f"{name} operands have mismatched lengths {count} and {b_shape[-2]} "
+                         "along the summed axis")
+    lanes = np.broadcast_shapes(a_shape[:-2], b_shape[:-2]) + (a_shape[-2], b_shape[-1])
+    shape = (lanes[:-2] + ((a_shape[-2],) if a.ndim > 1 else ())
+             + ((b_shape[-1],) if b.ndim > 1 else ()))
+    complex = a.is_complex or b.is_complex
+    full = _stage_format(_multiply_format(a.format, b.format, a.is_complex, b.is_complex),
+                         complex, "the full product")
+    term = (full if policy.product == "full"
+            else _stage_format(policy.product, complex, "the product format"))
+    kernels.check_conversion(full, term)
+    accumulated, step = _accumulation(term, count, policy, complex)
+    target, out = _prepare(accumulated, policy.sum, complex, shape, (a, b), out)
+    if step is None and term == full:
+        # Exact products and exact accumulation need no ordering or boundaries.
+        totals = [part for part in kernels.matmul(*_matrix_parts(a, a_shape),
+                                                  *_matrix_parts(b, b_shape))
+                  if part is not None]
+    else:
+        blocks = _product_blocks(_matrix_parts(a, a_shape), _matrix_parts(b, b_shape),
+                                 lanes, count, full, term, policy)
+        totals = _accumulate(blocks, lanes, 1 + complex, term, accumulated, step, policy)
+    return _finish_reduction(totals, accumulated, target, policy, shape, out)
+
+
+def dot(a, b, *, out=None, math: Math | None = None):
+    """Inner product of two one-dimensional arrays, without conjugation.
+
+    Product policy applies to each completed product, accumulator policy to
+    each ordered addition, and sum policy to the final result.
+    """
+    for value in (a, b):
+        if _array_operand(value, "dot").ndim != 1:
+            raise ValueError("dot supports one-dimensional inner products; use matmul for matrices")
+    return _matmul(a, b, out, math, "dot")
+
+
+def matmul(a, b, *, out=None, math: Math | None = None):
+    """Matrix product over the last two logical axes, with stacked broadcasting.
+
+    One-dimensional operands follow NumPy: a left vector is a row, a right
+    vector a column, and the added axis is removed. The three quantization
+    stages match ``dot``.
+    """
+    return _matmul(a, b, out, math, "matmul")
+
+
+def _numpy_reduce(value, axis=0, keepdims=False, out=None, where=True, **unsupported):
+    # np.add.reduce defaults to axis 0, unlike np.sum.
+    if where is not True:
+        raise TypeError("fixed-point reductions require where=True")
+    if unsupported:
+        raise TypeError(f"unsupported fixed-point reduction keywords: {', '.join(unsupported)}")
+    return sum(value, axis, keepdims=keepdims, out=out)
+
+
+def _numpy_sum(value, axis=None, dtype=None, out=None, keepdims=False, **unsupported):
+    if dtype is not None:
+        unsupported["dtype"] = dtype
+    if unsupported:
+        raise TypeError(f"unsupported fixed-point reduction keywords: {', '.join(unsupported)}")
+    return sum(value, axis, keepdims=keepdims, out=out)
+
+
+def _numpy_dot(a, b, out=None):
+    return dot(a, b, out=out)
+
+
 _REVERSED_COMPARISON = {"equal": "equal", "not_equal": "not_equal", "less": "greater",
                         "less_equal": "greater_equal", "greater": "less",
                         "greater_equal": "less_equal"}
@@ -722,4 +967,5 @@ _UFUNCS = {np.add: add, np.subtract: subtract, np.multiply: multiply,
            np.positive: positive, np.negative: negative, np.absolute: absolute,
            np.conjugate: conjugate, np.equal: equal, np.not_equal: not_equal,
            np.less: less, np.less_equal: less_equal, np.greater: greater,
-           np.greater_equal: greater_equal}
+           np.greater_equal: greater_equal, np.matmul: matmul}
+_FUNCTIONS = {np.sum: _numpy_sum, np.dot: _numpy_dot}

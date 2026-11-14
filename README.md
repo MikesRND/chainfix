@@ -9,7 +9,8 @@
 Chainfix provides real and complex binary fixed-point arithmetic and decimal
 fixed-point construction and inspection. The scalar package uses Python integers
 and has no NumPy dependency. The optional [array interface](docs/arrays.md) adds
-NumPy storage, checked integer arithmetic, and reusable output destinations.
+NumPy storage, checked integer arithmetic, reusable output destinations, and
+ordered sum, dot, and matrix-product reductions.
 
 ```python
 import chainfix as cf
@@ -200,11 +201,6 @@ Fixd(3.1415926536, 256, 10)
 
 The explicit precision overrides the current context; its word length must still
 provide enough range for the value.
-
-# Future Work
-
-* Internal scratch-buffer reuse for complex array workloads
-* Reductions with separate product, accumulator, and final-sum policies
 
 Decimal arithmetic and division remain unsupported.
 
