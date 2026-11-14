@@ -15,13 +15,12 @@
 # Some context code adapted from Python's decimal module
 # Copyright (c) 2004 Python Software Foundation.
 
-from enum import Enum
-from typing import Optional
+from contextlib import contextmanager
+from dataclasses import replace
+from typing import Iterator, Optional, Self
 
-
-class Overflow(Enum):
-    SATURATE = 1
-    WRAP = 2
+from chainfix.format import _integer
+from chainfix.policy import Math, Overflow, ResultFormat, Rounding
 
 
 class _Context:
@@ -66,7 +65,82 @@ class DecimalContext(_Context):
 
 
 class BinaryContext(_Context):
+    """Mutable binary defaults; use local_binary_context for scoped isolation."""
+
     base = 2
+
+    def __init__(self, wordlength: int | None = None, precision: int | None = None,
+                 overflow: Overflow | str | None = None, *, math: Math | None = None,
+                 rounding: Rounding | str | None = None,
+                 product: ResultFormat | None = None, sum: ResultFormat | None = None,
+                 accumulator: ResultFormat | None = None):
+        default = self.get_default()
+        self.wordlength = wordlength if wordlength is not None else (default.wordlength if default else 32)
+        self.precision = precision if precision is not None else (default.precision if default else 16)
+        overrides = {name: value for name, value in
+                     (("rounding", rounding), ("overflow", overflow), ("product", product),
+                      ("sum", sum), ("accumulator", accumulator)) if value is not None}
+        if math is not None and overrides:
+            raise ValueError("math cannot be combined with individual policy overrides")
+        if math is not None:
+            self.math = math
+        else:
+            self.math = replace(default.math if default else Math(), **overrides)
+
+    @property
+    def wordlength(self) -> int:
+        return self._wordlength
+
+    @wordlength.setter
+    def wordlength(self, value: int):
+        if _integer(value, "wordlength") < 1:
+            raise ValueError("wordlength must be positive")
+        self._wordlength = value
+
+    @property
+    def precision(self) -> int:
+        return self._precision
+
+    @precision.setter
+    def precision(self, value: int):
+        self._precision = _integer(value, "precision")
+
+    @property
+    def math(self) -> Math:
+        return self._math
+
+    @math.setter
+    def math(self, value: Math):
+        if not isinstance(value, Math):
+            raise TypeError("math must be a Math")
+        self._math = value
+
+    @property
+    def overflow(self) -> Overflow:
+        return self.math.overflow
+
+    @overflow.setter
+    def overflow(self, value: Overflow | str):
+        self.math = replace(self.math, overflow=value)
+
+    @property
+    def rounding(self) -> Rounding:
+        return self.math.rounding
+
+    @rounding.setter
+    def rounding(self, value: Rounding | str):
+        self.math = replace(self.math, rounding=value)
+
+    def copy(self) -> Self:
+        """Copy mutable defaults while sharing the immutable Math configuration."""
+        return type(self)(self.wordlength, self.precision, math=self.math)
+
+    # The base alias binds _Context.copy; it does not dispatch to this override.
+    __copy__ = copy
+
+    def __repr__(self) -> str:
+        return (f"{type(self).__name__}(wordlength={self.wordlength}, "
+                f"precision={self.precision}, math={self.math!r})")
 
     def get_default(self):
         try:
@@ -86,7 +160,7 @@ DefaultDecimalContext = DecimalContext(
 DefaultBinaryContext = BinaryContext(
     wordlength=32,
     precision=16,
-    overflow=Overflow.SATURATE
+    overflow=Overflow.RAISE
 )
 
 # Context Functions
@@ -140,10 +214,43 @@ def get_binary_context():
 
 
 def set_binary_context(context):
-    """Set this thread's context to context."""
-    if context in (DefaultBinaryContext,):
-        context = context.copy()
-    _current_binary_context_var.set(context)
+    """Validate and copy binary defaults into the current execution context."""
+    if not isinstance(context, BinaryContext):
+        raise TypeError("context must be a BinaryContext")
+    _current_binary_context_var.set(context.copy())
+
+
+@contextmanager
+def local_binary_context(context: BinaryContext | None = None, *,
+                         wordlength: int | None = None, precision: int | None = None,
+                         math: Math | None = None, rounding: Rounding | str | None = None,
+                         overflow: Overflow | str | None = None,
+                         product: ResultFormat | None = None, sum: ResultFormat | None = None,
+                         accumulator: ResultFormat | None = None) -> Iterator[BinaryContext]:
+    """Install a copied context and restore the previous one even on failure."""
+    if context is None:
+        context = get_binary_context()
+    if not isinstance(context, BinaryContext):
+        raise TypeError("context must be a BinaryContext")
+    scoped = context.copy()
+    overrides = {name: value for name, value in
+                 (("rounding", rounding), ("overflow", overflow), ("product", product),
+                  ("sum", sum), ("accumulator", accumulator)) if value is not None}
+    if math is not None and overrides:
+        raise ValueError("math cannot be combined with individual policy overrides")
+    if math is not None:
+        scoped.math = math
+    elif overrides:
+        scoped.math = replace(scoped.math, **overrides)
+    if wordlength is not None:
+        scoped.wordlength = wordlength
+    if precision is not None:
+        scoped.precision = precision
+    token = _current_binary_context_var.set(scoped)
+    try:
+        yield scoped
+    finally:
+        _current_binary_context_var.reset(token)
 
 
 del contextvars  # Don't contaminate the namespace

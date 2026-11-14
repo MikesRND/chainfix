@@ -6,10 +6,28 @@
 [![Python Version](https://img.shields.io/badge/python-3.12%2B-blue)](https://github.com/pydefi/chainfix)
 [![License](https://img.shields.io/github/license/pydefi/chainfix)](https://github.com/pydefi/chainfix/blob/main/LICENSE)
 
-Chainfix provides a way to represent numbers and perform simple math operations using fixed-point data types.
+Chainfix provides real binary fixed-point arithmetic and decimal fixed-point
+construction and inspection. The scalar package uses Python integers and has no
+NumPy dependency.
 
-Chainfix supports binary fixed-point (base-2), decimal fixed-point (base-10)
-or even arbitrary (base-N) fixed-point types.
+```python
+import chainfix as cf
+
+q14 = cf.Format(base=2, signed=True, wordlength=16, precision=14)
+a = cf.Fixb(0.75, format=q14)
+b = cf.Fixb(0.5, format=q14)
+c = cf.Fixb(0.25, format=q14)
+y = a * b + c  # full product and sum growth; exactly 0.625
+
+dsp = cf.Math(rounding="floor", overflow="wrap", product=q14, sum=q14)
+with cf.local_binary_context(math=dsp):
+    bounded = a * b + c
+```
+
+Values carry their format; arithmetic follows the active scope or an explicit
+`math=` argument. Defaults are nearest-even rounding and raise on overflow.
+See [binary arithmetic](docs/binary-arithmetic.md) for conversion rules, growth,
+scopes, supported operators, and compatibility notes for the planned 0.2.0 release.
 
 Fixed-point data types are used in a wide range of computing applications. 
 Binary-fixed point types are commonly used in the design of specialized hardware, 
@@ -95,7 +113,7 @@ The `.int` property returns the stored integer value:
 12868
 ```
 
-The resolution of the decimal fixed-point data type is `2 ** -precision`, which 
+The resolution of the binary fixed-point data type is `2 ** -precision`, which
 is also the value of one least significant bit:
 
 ```python
@@ -167,11 +185,15 @@ context.
 Fixd(3.1415926536, 256, 10)
 ```
 
-Note that resulting data type has insufficinet range to represent the value pi.
+The explicit precision overrides the current context; its word length must still
+provide enough range for the value.
 
 # Future Work
 
-* Support math operations for fixed-point types using the applicable context
+* Complex binary scalars, optional NumPy arrays, and reusable-buffer execution
+* Reductions with separate product, accumulator, and final-sum policies
+
+Decimal arithmetic and division remain unsupported.
 
 # Contributing
 

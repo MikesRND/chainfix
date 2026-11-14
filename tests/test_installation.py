@@ -48,6 +48,8 @@ class RejectNumpy(importlib.abc.MetaPathFinder):
 sys.meta_path.insert(0, RejectNumpy())
 import chainfix
 assert chainfix.Fixb(0.5).as_integer_ratio() == (1, 2)
+with chainfix.local_binary_context(math=chainfix.Math()):
+    assert (chainfix.Fixb(0.5) * 2 + chainfix.Fixb(0.25)).as_integer_ratio() == (5, 4)
 assert not any(name == 'numpy' or name.startswith('numpy.') for name in sys.modules)
 """],
         check=True,
