@@ -190,7 +190,10 @@ There are no mutating augmented operators. `y *= g` computes `y * g` and rebinds
 `y` to a fresh result, which may have a different format. Other references to the
 old buffer retain their original values. Use a separate `out` for destination
 reuse. `out` preserves that destination's identity; it does not promise zero
-temporary allocation. Internal reusable scratch is a later stage.
+temporary allocation. A private workspace for the standalone complex gain
+workload reuses sample-sized scratch; see [buffer reuse](buffer-reuse.md) for its
+scope, allocation regression, and reproducible measurements. It is an internal
+experiment, not a supported external preparation/binding API.
 
 Work buffers use signed int64. Stored formats support signed widths through 64
 bits and unsigned widths through 63 bits. Operations preflight declared aligned

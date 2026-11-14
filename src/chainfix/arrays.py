@@ -195,8 +195,12 @@ class Array:
     def quantize(self, format: Format, *, math: Math | None = None):
         kernels.check_format(format, self.is_complex)
         raw = kernels.convert(self.raw, self.format, format, _selected_math(math))
+        # A value-preserving conversion can return this array's own int64 storage.
+        # The result always owns independent, writable, C-contiguous storage; copy
+        # again only when conversion did not already produce it.
+        copy = True if raw is self.raw or np.may_share_memory(raw, self.raw) else None
         return Array._from_storage(np.array(raw, dtype=kernels.storage_dtype(format),
-                                          copy=True, order="C"), format, self.is_complex)
+                                            copy=copy, order="C"), format, self.is_complex)
 
     def conjugate(self, *, math: Math | None = None):
         return conjugate(self, math=math)
@@ -473,20 +477,23 @@ def _prepare(full, boundary, complex, shape, inputs, out):
     return target, out
 
 
+def _convert_result(raw, full, target, destination, policy, *, out=None, scratch=None):
+    if full != target:
+        raw = kernels.convert(raw, full, target, policy, out=out, scratch=scratch)
+    # Preserve the operation boundary even when out has a different format.
+    if destination != target:
+        raw = kernels.convert(raw, target, destination, policy, out=out, scratch=scratch)
+    return raw
+
+
 def _finish(i, q, full, target, policy, shape, out):
     complex = q is not None
     destination = target if out is None else out.format
     if out is None:
         out = empty(shape, format=target, complex=complex)
-    if full != target:
-        i = kernels.convert(i, full, target, policy)
-        if complex:
-            q = kernels.convert(q, full, target, policy)
-    # Preserve the operation boundary even when out has a different format.
-    if destination != target:
-        i = kernels.convert(i, target, destination, policy)
-        if complex:
-            q = kernels.convert(q, target, destination, policy)
+    i = _convert_result(i, full, target, destination, policy)
+    if complex:
+        q = _convert_result(q, full, target, destination, policy)
     if complex:
         out.raw[..., 0], out.raw[..., 1] = i, q
     else:
@@ -499,15 +506,18 @@ def _components(value):
     return (raw[..., 0], raw[..., 1]) if value.is_complex else (raw, np.int64(0))
 
 
+def _multiply_format(a, b, a_complex, b_complex):
+    full = _product_format(a, b)
+    return replace(full, wordlength=full.wordlength + 1) if a_complex and b_complex else full
+
+
 def _binary(a, b, operation, out, math):
     a, b = _as_operand(a), _as_operand(b)
     policy = _selected_math(math)
     complex = a.is_complex or b.is_complex
     shape = np.broadcast_shapes(a.shape, b.shape)
     if operation == "multiply":
-        full = _product_format(a.format, b.format)
-        if a.is_complex and b.is_complex:
-            full = replace(full, wordlength=full.wordlength + 1)
+        full = _multiply_format(a.format, b.format, a.is_complex, b.is_complex)
         boundary = policy.product
     else:
         precision = max(a.format.precision, b.format.precision)
@@ -519,7 +529,12 @@ def _binary(a, b, operation, out, math):
     ai, aq = _components(a)
     bi, bq = _components(b)
     if operation == "multiply":
-        i, q = ai * bi - aq * bq, ai * bq + aq * bi
+        if complex:
+            i, q, work = (np.empty(shape, dtype=np.int64) for _ in range(3))
+            kernels.multiply_complex(ai, aq, bi, bq, i=i, q=q, work=work)
+            del work  # Release product scratch before _finish allocates its output.
+        else:
+            i, q = np.multiply(ai, bi), None
     else:
         ai, aq = ai << (full.precision - a.format.precision), aq << (full.precision - a.format.precision)
         bi, bq = bi << (full.precision - b.format.precision), bq << (full.precision - b.format.precision)

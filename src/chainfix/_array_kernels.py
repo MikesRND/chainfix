@@ -60,57 +60,174 @@ def _quotient(raw, shift):
     return quotient, remainder != 0
 
 
-def _round_down(raw, shift, rounding):
-    # shift >= 1. The quotient has headroom for a rounding increment, including
-    # at INT64_MIN/MAX. Never negate min-int or add a half-LSB to the input.
-    quotient, nonzero = _quotient(raw, shift)
+class _ConversionScratch:
+    """Serial scratch; buffers must be disjoint from conversion input/output.
+
+    The reusable workspace preallocates every buffer once. A one-off conversion
+    passes lazy=True so only the buffers its rounding/overflow branch needs exist.
+    """
+
+    __slots__ = ("_shape", "_remainder", "_increment", "_mask", "_predicate")
+
+    def __init__(self, shape, *, remainder=None, lazy=False):
+        self._shape = shape
+        self._remainder = remainder
+        self._increment = self._mask = self._predicate = None
+        if not lazy:
+            for name in ("remainder", "increment", "mask", "predicate"):
+                getattr(self, name)
+
+    @property
+    def remainder(self):
+        if self._remainder is None:
+            self._remainder = np.empty(self._shape, dtype=np.int64)
+        return self._remainder
+
+    @property
+    def increment(self):
+        if self._increment is None:
+            self._increment = np.empty(self._shape, dtype=bool)
+        return self._increment
+
+    @property
+    def mask(self):
+        if self._mask is None:
+            self._mask = np.empty(self._shape, dtype=bool)
+        return self._mask
+
+    @property
+    def predicate(self):
+        if self._predicate is None:
+            self._predicate = np.empty(self._shape, dtype=bool)
+        return self._predicate
+
+
+def _add_increment(out, increment, scratch):
+    # Adding the boolean array directly allocates an iterator cast buffer, and a
+    # masked add (where=increment) is several times slower on irregular masks.
+    # The int64 remainder is dead here, so widen the increment into it.
+    widened = scratch.remainder
+    np.copyto(widened, increment)
+    np.add(out, widened, out=out)
+
+
+def _round_down_into(raw, shift, rounding, out, scratch):
+    # shift >= 1. Save the remainder/sign before overwriting raw: exact aliases
+    # are used privately after multiplication. The quotient has increment room,
+    # including at INT64_MIN/MAX; never bias or negate the original integer.
     if rounding is Rounding.FLOOR:
-        return quotient
-    if rounding is Rounding.CEIL:
-        return quotient + nonzero
-    if rounding is Rounding.ZERO:
-        return quotient + (nonzero & (raw < 0))
+        np.right_shift(raw, min(shift, 63), out=out)
+        return
+    # Access scratch lazily per branch: one-off conversions allocate only what
+    # their rounding mode uses.
+    increment = scratch.increment
+    if rounding in (Rounding.CEIL, Rounding.ZERO):
+        if shift >= 64:
+            np.not_equal(raw, 0, out=increment)
+        else:
+            remainder = scratch.remainder
+            np.bitwise_and(raw, (1 << shift) - 1, out=remainder)
+            np.not_equal(remainder, 0, out=increment)
+        if rounding is Rounding.ZERO:
+            mask = scratch.mask
+            np.less(raw, 0, out=mask)
+            np.logical_and(increment, mask, out=increment)
+        np.right_shift(raw, min(shift, 63), out=out)
+        _add_increment(out, increment, scratch)
+        return
+    mask = scratch.mask
     if shift >= 64:
         # |raw| <= 2**63: only INT64_MIN / 2**64 can be a tie.
         if shift == 64 and rounding is Rounding.NEAREST_AWAY:
-            return np.where(raw == -(1 << 63), np.int64(-1), np.int64(0))
-        return np.zeros_like(raw)
-    remainder = np.bitwise_and(raw, (1 << shift) - 1)
+            np.equal(raw, -(1 << 63), out=mask)
+            np.copyto(out, mask)
+            np.negative(out, out=out)
+        else:
+            out.fill(0)
+        return
+    remainder = scratch.remainder
+    np.bitwise_and(raw, (1 << shift) - 1, out=remainder)
     half = 1 << (shift - 1)
-    increment = remainder > half
+    np.greater(remainder, half, out=increment)
+    np.equal(remainder, half, out=mask)
+    if rounding is Rounding.NEAREST_AWAY:
+        np.greater_equal(raw, 0, out=scratch.predicate)
+        np.logical_and(mask, scratch.predicate, out=mask)
+    np.right_shift(raw, shift, out=out)
     if rounding is Rounding.NEAREST_EVEN:
-        increment |= (remainder == half) & ((quotient & 1) != 0)
-    elif rounding is Rounding.NEAREST_UP:
-        increment |= remainder == half
-    else:  # nearest_away
-        increment |= (remainder == half) & (raw >= 0)
-    return quotient + increment
+        np.bitwise_and(out, 1, out=remainder)
+        np.not_equal(remainder, 0, out=scratch.predicate)
+        np.logical_and(mask, scratch.predicate, out=mask)
+    np.logical_or(increment, mask, out=increment)
+    _add_increment(out, increment, scratch)
 
 
-def convert(raw, source: Format, target: Format, policy):
-    """Round first, then apply overflow. The caller also preflights conversions."""
+def convert(raw, source: Format, target: Format, policy, *, out=None, scratch=None):
+    """Round, then overflow, optionally into private int64 storage and scratch.
+
+    The reusable caller supplies same-shaped buffers; raw and out may be exact
+    aliases, while scratch is disjoint. Public output overlap remains forbidden.
+    Without out, a conversion that changes no values (zero shift with raise, or
+    wrap to signed 64 bits) returns the int64 input itself, which may be borrowed
+    caller storage. Callers that need independent storage must copy.
+    """
     check_conversion(source, target)
     raw = np.asarray(raw, dtype=np.int64)
+    if scratch is None:
+        scratch = _ConversionScratch(raw.shape, lazy=True)
     shift = target.precision - source.precision
-    if shift > 0:
-        raw = np.left_shift(raw, shift)
-    elif shift < 0:
-        raw = _round_down(raw, -shift, policy.rounding)
+    if shift == 0:
+        value = raw
+    else:
+        if out is None:
+            out = np.empty(raw.shape, dtype=np.int64)
+        if shift > 0:
+            np.left_shift(raw, shift, out=out)
+        else:
+            _round_down_into(raw, -shift, policy.rounding, out, scratch)
+        value = out
     lower, upper = target.min_int, target.max_int
-    if policy.overflow is Overflow.RAISE:
-        if np.any(raw < lower) or np.any(raw > upper):
-            raise FixedPointOverflowError("stored array integer is outside the destination format")
-        return raw
+    # Every int64 encoding already fits signed 64 bits, so wrapping changes nothing.
+    if policy.overflow is Overflow.RAISE or (policy.overflow is Overflow.WRAP and
+                                              target.signed and target.wordlength == 64):
+        if policy.overflow is Overflow.RAISE:
+            mask = scratch.mask
+            np.less(value, lower, out=mask)
+            if mask.any():
+                raise FixedPointOverflowError("stored array integer is outside the destination format")
+            np.greater(value, upper, out=mask)
+            if mask.any():
+                raise FixedPointOverflowError("stored array integer is outside the destination format")
+        if out is None:
+            return value
+        if out is not value:
+            np.copyto(out, value)
+        return out
+    if out is None:
+        out = np.empty(raw.shape, dtype=np.int64)
     if policy.overflow is Overflow.SATURATE:
-        return np.clip(raw, lower, upper)
-    if target.signed and target.wordlength == 64:
-        return raw  # Every int64 encoding is valid; no 2**64 mask is needed.
-    raw = np.bitwise_and(raw, (1 << target.wordlength) - 1)
-    if target.signed:
-        sign = 1 << (target.wordlength - 1)
-        # Both intermediates fit int64, even for a 63-bit target.
-        raw = np.bitwise_xor(raw, sign) - sign
-    return raw
+        np.clip(value, lower, upper, out=out)
+    else:
+        np.bitwise_and(value, (1 << target.wordlength) - 1, out=out)
+        if target.signed:
+            sign = 1 << (target.wordlength - 1)
+            np.bitwise_xor(out, sign, out=out)
+            np.subtract(out, sign, out=out)
+    return out
+
+
+def multiply_complex(ai, aq, bi, bq, *, i, q, work):
+    """Completed components in disjoint int64 outputs, before any quantization.
+
+    Callers preflight declared product/sum bounds and promote operands to int64.
+    The reusable path promotes into persistent storage to avoid cast buffers.
+    """
+    np.multiply(ai, bi, out=i)
+    np.multiply(aq, bq, out=work)
+    np.subtract(i, work, out=i)
+    np.multiply(ai, bq, out=q)
+    np.multiply(aq, bi, out=work)
+    np.add(q, work, out=q)
 
 
 def compare(a, ap, b, bp, operation):
