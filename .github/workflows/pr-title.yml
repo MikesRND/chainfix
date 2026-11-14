@@ -28,6 +28,8 @@ jobs:
             ci
             build
             refactor
+            perf
+            revert
           scopes: |
             context
             binary

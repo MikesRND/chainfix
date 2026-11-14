@@ -29,6 +29,8 @@ Allowed types:
 | `ci` | Change CI workflows or checks |
 | `build` | Change packaging, build tools, dependencies, or supported runtimes |
 | `refactor` | Restructure code without changing its behavior |
+| `perf` | Improve performance without changing the numerical or API contract |
+| `revert` | Undo an earlier change |
 
 Scopes are optional. When used, choose one of `context`, `binary`, `complex`,
 `decimal`, `arrays`, or `deps`. Extend this list and the workflow together through
@@ -43,6 +45,8 @@ feat(binary): add arithmetic operators and math policies
 feat(complex): add CFixb
 feat(arrays): add fixed-point array multiplication
 ci: validate pull request titles
+perf(arrays): reuse complex multiplication scratch buffers
+revert: add fixed-point array multiplication
 ```
 
 Use squash merging. The repository permits only squash merges and defaults the
@@ -57,6 +61,12 @@ policy prospectively; do not rewrite existing history. For a change spanning
 multiple types, select the dominant purpose for the title and explain the rest
 in the description. Prefer separate PRs for independently reviewable changes.
 
+GitHub-generated revert PRs have titles such as `Revert "feat: ..."`. Retitle them
+to `revert: <original subject>` so they pass the required title check. Explain
+what is being reverted and why in the description, and link the original PR.
+Assess a revert's release impact against the last released version, including
+`!` and a breaking-change footer when needed.
+
 ## Releases before 1.0
 
 Releases remain manual. The version lives in `src/chainfix/__init__.py`; publishing
@@ -70,7 +80,7 @@ release, applying the highest applicable bump once:
 | --- | --- | --- |
 | Any breaking change (`!`), regardless of type | Minor | 0.1.2 → 0.2.0 |
 | A new feature (`feat`) without a break | Minor | 0.1.2 → 0.2.0 |
-| Bug fixes (`fix`) without either of the above | Patch | 0.1.2 → 0.1.3 |
+| Bug fixes or performance improvements (`fix`, `perf`) without either of the above | Patch | 0.1.2 → 0.1.3 |
 | Other changes without a break | No automatic release requirement | Maintainer decides |
 
 Mark breaking changes even before 1.0. Multiple breaking or feature PRs can belong
