@@ -26,10 +26,11 @@ then sum policy on the final result.
 from __future__ import annotations
 
 import builtins
+from contextlib import contextmanager
 from copy import deepcopy
 from dataclasses import replace
 from decimal import Decimal
-from functools import reduce
+from math import prod
 from numbers import Number
 import operator
 
@@ -269,6 +270,10 @@ class Array:
         raise TypeError("implicit ndarray conversion discards format; use raw or to_numpy()")
 
     def __array_function__(self, func, types, args, kwargs):
+        # As for ufuncs, let a foreign type's own handler participate before any
+        # strictness here. ndarrays and their subclasses stay recognized operands.
+        if not all(issubclass(kind, (Array, np.ndarray)) for kind in types):
+            return NotImplemented
         if func not in _FUNCTIONS:
             raise TypeError(f"NumPy function {func.__name__} is unsupported for fixed-point arrays")
         return _FUNCTIONS[func](*args, **kwargs)
@@ -319,9 +324,6 @@ class Array:
 
     def __matmul__(self, other):
         return matmul(self, other) if isinstance(other, Array) else NotImplemented
-
-    def __rmatmul__(self, other):
-        return matmul(other, self) if isinstance(other, Array) else NotImplemented
 
     def __pos__(self):
         return positive(self)
@@ -653,18 +655,32 @@ def _reduction_axis(axis, ndim):
     axis = _native_value(axis)
     if isinstance(axis, bool) or not isinstance(axis, int):
         raise TypeError("axis must be None or one integer; multi-axis reductions are unsupported")
+    if not ndim and axis in (0, -1):
+        return None  # As in NumPy, either names a zero-dimensional array's one sample.
     if not -ndim <= axis < ndim:
         raise np.exceptions.AxisError(axis, ndim)
     return axis % ndim
 
 
-def _stage_format(format, complex, stage, hint=""):
-    """Check a reduction stage's declared format, naming the stage on failure."""
+@contextmanager
+def _stage(description):
+    """Name the reduction stage whose declared format or alignment is rejected."""
     try:
-        return kernels.check_format(format, complex)
+        yield
     except ValueError as error:
-        kind = "signed" if format.signed else "unsigned"
-        raise ValueError(f"{error}; {stage} is {format.wordlength}-bit {kind}{hint}") from None
+        raise ValueError(f"{error}; {description}") from None
+
+
+def _width(format):
+    return f"{format.wordlength}-bit {'signed' if format.signed else 'unsigned'}"
+
+
+def _representable(format):
+    try:
+        kernels.check_format(format)
+    except ValueError:
+        return False
+    return True
 
 
 def _accumulation(term, count, policy, complex):
@@ -677,14 +693,22 @@ def _accumulation(term, count, policy, complex):
     if policy.accumulator == "full":
         guard = max(count - 1, 0).bit_length()
         full = replace(term, wordlength=term.wordlength + guard)
-        return _stage_format(full, complex, f"the full sum of {count} terms",
-                             ". An explicit accumulator format bounds each step instead"), None
-    accumulator = _stage_format(policy.accumulator, complex, "the accumulator format")
+        # An explicit accumulator helps only if one more bit than a term fits.
+        hint = (". An explicit accumulator format bounds each step instead"
+                if _representable(_sum_format(term, term)) else "")
+        with _stage(f"the full sum of {count} terms is {_width(full)}{hint}"):
+            return kernels.check_format(full, complex), None
+    accumulator = policy.accumulator
+    with _stage(f"the accumulator format is {_width(accumulator)}"):
+        kernels.check_format(accumulator, complex)
     precision = max(accumulator.precision, term.precision)
-    kernels.check_shift(accumulator, precision - accumulator.precision)
-    kernels.check_shift(term, precision - term.precision)
-    return accumulator, _stage_format(_sum_format(accumulator, term), False,
-                                      "each exact accumulator step")
+    with _stage(f"aligning the {_width(accumulator)} accumulator to term precision {precision}"):
+        kernels.check_shift(accumulator, precision - accumulator.precision)
+    with _stage(f"aligning each {_width(term)} term to accumulator precision {precision}"):
+        kernels.check_shift(term, precision - term.precision)
+    step = _sum_format(accumulator, term)
+    with _stage(f"each exact accumulator step is {_width(step)}"):
+        return accumulator, kernels.check_format(step)
 
 
 def _accumulate(blocks, lanes, parts, term, accumulated, step, policy):
@@ -737,7 +761,10 @@ def sum(value, axis=None, *, keepdims=False, out=None, math: Math | None = None)
         shape = value.shape[:axis] + ((1,) if keepdims else ()) + value.shape[axis + 1:]
     accumulated, step = _accumulation(value.format, count, policy, value.is_complex)
     target, out = _prepare(accumulated, policy.sum, value.is_complex, shape, (value,), out)
-    parts = _components(value)[:1 + value.is_complex]
+    # An exact sum widens as it reduces, so it reads stored samples directly;
+    # ordered steps need int64 terms.
+    raw = value.raw if step is None else value.raw.astype(np.int64, copy=False)
+    parts = (raw[..., 0], raw[..., 1]) if value.is_complex else (raw,)
     block = tuple(part.reshape(-1) if axis is None else np.moveaxis(part, axis, -1)
                   for part in parts)
     totals = _accumulate((block,), lanes, len(parts), value.format, accumulated, step, policy)
@@ -760,7 +787,7 @@ def _product_blocks(a, b, lanes, count, full, term, policy):
     # Put the summed axis last and give each operand the other's lane axis.
     a = [None if part is None else part[..., :, None, :] for part in a]
     b = [None if part is None else np.swapaxes(part, -1, -2)[..., None, :, :] for part in b]
-    width = max(1, min(count, _BLOCK_ELEMENTS // max(1, reduce(operator.mul, lanes, 1))))
+    width = max(1, min(count, _BLOCK_ELEMENTS // max(1, prod(lanes))))
     parts = ()
     for start in range(0, count, width):
         ai, aq, bi, bq = (None if part is None else part[..., start:start + width]
@@ -799,11 +826,14 @@ def _matmul(a, b, out, math, name):
     shape = (lanes[:-2] + ((a_shape[-2],) if a.ndim > 1 else ())
              + ((b_shape[-1],) if b.ndim > 1 else ()))
     complex = a.is_complex or b.is_complex
-    full = _stage_format(_multiply_format(a.format, b.format, a.is_complex, b.is_complex),
-                         complex, "the full product")
-    term = (full if policy.product == "full"
-            else _stage_format(policy.product, complex, "the product format"))
-    kernels.check_conversion(full, term)
+    full = _multiply_format(a.format, b.format, a.is_complex, b.is_complex)
+    with _stage(f"the full product is {_width(full)}"):
+        kernels.check_format(full, complex)
+    term = full if policy.product == "full" else policy.product
+    with _stage(f"the product format is {_width(term)}"):
+        kernels.check_format(term, complex)
+    with _stage(f"converting each {_width(full)} product to product precision {term.precision}"):
+        kernels.check_conversion(full, term)
     accumulated, step = _accumulation(term, count, policy, complex)
     target, out = _prepare(accumulated, policy.sum, complex, shape, (a, b), out)
     if step is None and term == full:
@@ -840,31 +870,31 @@ def matmul(a, b, *, out=None, math: Math | None = None):
     return _matmul(a, b, out, math, "matmul")
 
 
-_ABSENT = object()
-
-
 def _numpy_options(dtype, initial, where):
-    # NumPy forwards explicitly passed defaults, so accept exactly those.
-    if where is not True:
+    # NumPy forwards explicitly passed defaults, and wrappers forward its
+    # np._NoValue placeholder for initial and where; accept exactly those.
+    if where is not True and where is not np._NoValue:
         raise TypeError("fixed-point reductions require where=True")
     unsupported = [name for name, given in (("dtype", dtype is not None),
-                                            ("initial", initial is not _ABSENT)) if given]
+                                            ("initial", initial is not np._NoValue)) if given]
     if unsupported:
         raise TypeError(f"unsupported fixed-point reduction keywords: {', '.join(unsupported)}")
 
 
 # These adapters mirror NumPy's parameter names and order, so every positional
 # or keyword spelling NumPy accepts binds the same way here.
-def _numpy_reduce(array, axis=0, dtype=None, out=None, keepdims=False, initial=_ABSENT,
+def _numpy_reduce(array, axis=0, dtype=None, out=None, keepdims=False, initial=np._NoValue,
                   where=True):
     # np.add.reduce defaults to axis 0, unlike np.sum.
     _numpy_options(dtype, initial, where)
     return sum(array, axis, keepdims=keepdims, out=out)
 
 
-def _numpy_sum(a, axis=None, dtype=None, out=None, keepdims=False, initial=_ABSENT, where=True):
+def _numpy_sum(a, axis=None, dtype=None, out=None, keepdims=False, initial=np._NoValue,
+               where=True):
     _numpy_options(dtype, initial, where)
-    return sum(a, axis, keepdims=keepdims, out=out)
+    # Only np.sum takes the placeholder for keepdims; np.add.reduce rejects it.
+    return sum(a, axis, keepdims=False if keepdims is np._NoValue else keepdims, out=out)
 
 
 def _numpy_dot(a, b, out=None):

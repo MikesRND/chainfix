@@ -25,11 +25,8 @@ np = pytest.importorskip("numpy", exc_type=ImportError)
 
 import chainfix as cf
 from chainfix import arrays as cfa
+from tests.test_array_math import raw_array
 from tests.test_binary_math import MODES, OVERFLOWS, fmt, oracle_raw
-
-
-def raw_array(values, format, complex=False):
-    return cfa.from_raw(np.array(values, dtype=np.int64), format=format, complex=complex)
 
 
 def val(raw, format):
@@ -262,8 +259,19 @@ def test_axes_keepdims_shapes_and_storage():
     assert isinstance(scalar, cf.Fixb) and scalar.format == fmt(13, 0) and scalar == values.sum()
     zero_d = cfa.sum(cfa.sum(x))
     assert zero_d.format == fmt(13, 0) and zero_d.raw.tolist() == values.sum()
-    with pytest.raises(np.exceptions.AxisError):
-        cfa.sum(cfa.sum(x), axis=0)
+    # As in NumPy, axis 0 or -1 names a zero-dimensional array's single sample.
+    for axis in (0, -1):
+        again = cfa.sum(zero_d, axis=axis, keepdims=True)
+        assert again.shape == () and again.format == fmt(13, 0) and again.raw.tolist() == values.sum()
+    for axis in (1, -2):
+        with pytest.raises(np.exceptions.AxisError):
+            cfa.sum(zero_d, axis=axis)
+    # An exact sum reads stored samples directly, including unsigned 64-bit storage.
+    unsigned = cfa.from_raw(np.array([[2 ** 60, 2 ** 60 - 1], [1, 0]], dtype=np.uint64),
+                            format=fmt(61, 0, False))
+    assert cfa.sum(unsigned).raw.tolist() == 2 ** 61 and cfa.sum(unsigned).format == fmt(63, 0, False)
+    assert cfa.sum(unsigned, axis=1).raw.tolist() == [2 ** 61 - 1, 1]
+    assert cfa.sum(unsigned, math=cf.Math(accumulator=fmt(62, 0, False))).raw.tolist() == 2 ** 61
 
     # Component views, read-only inputs, and wider storage are all read in place.
     z = raw_array([[[1, 10], [2, 20]], [[3, 30], [4, 40]]], source, complex=True)
@@ -412,14 +420,14 @@ def test_exhaustive_two_term_dots_for_small_formats(mode, overflow):
              {"accumulator": fmt(5, 4)}, {"product": fmt(5, 0), "sum": fmt(2, 0)},
              {"product": fmt(4, 2), "accumulator": fmt(4, 2), "sum": fmt(4, 3)}]
     assert list(braws) == [0, 1, 2, 3]
-    for a, b in itertools.product(itertools.product(araws, repeat=2),
-                                  ((0, 3), (1, 2), (3, 3), (2, 1))):
+    for a, b in itertools.product(itertools.product(araws, repeat=2), ((0, 3), (1, 2), (3, 1))):
         x, y = raw_array(a, af), raw_array(b, bf)
         for spec in specs:
             spec = dict(spec, rounding=mode, overflow=overflow)
-            expect(lambda: cfa.dot(x, y, math=policy_of(spec)), [products(a, af, b, bf)], full, spec)
-        # Operand order changes neither the completed products nor their order.
-        expect(lambda: cfa.dot(y, x, math=policy_of(spec)), [products(a, af, b, bf)], full, spec)
+            # Operand order changes neither the completed products nor their order.
+            for left, right in ((x, y), (y, x)):
+                expect(lambda: cfa.dot(left, right, math=policy_of(spec)),
+                       [products(a, af, b, bf)], full, spec)
 
 
 def random_complex(rng, shape, format):
@@ -561,26 +569,44 @@ def test_unsupported_reduction_domains_raise_before_execution():
         cfa.sum(raw_array([1, 1], fmt(63, 0, False)))
     with pytest.raises(ValueError, match=domain):
         cfa.sum(raw_array([1] * 5, fmt(62, 0)))
-    # The message names the stage whose declared range is too wide.
+    # The message names the stage whose declared range or alignment is too wide.
+    hint = "An explicit accumulator format bounds each step instead"
     for call, stage in (
-            (lambda: cfa.sum(wide), "the full sum of 2 terms is 65-bit signed. An explicit accumulator"),
+            (lambda: cfa.sum(raw_array([1] * 5, fmt(62, 0))),
+             f"the full sum of 5 terms is 65-bit signed. {hint}"),
+            (lambda: cfa.sum(raw_array([1] * 3, fmt(62, 0, False))),
+             f"the full sum of 3 terms is 64-bit unsigned. {hint}"),
+            (lambda: cfa.sum(wide), "the full sum of 2 terms is 65-bit signed$"),
             (lambda: cfa.sum(raw_array([1, 1], fmt(63, 0, False))),
-             "the full sum of 2 terms is 64-bit unsigned"),
+             "the full sum of 2 terms is 64-bit unsigned$"),
             (lambda: cfa.sum(wide, math=cf.Math(accumulator=fmt(64, 0))),
              "each exact accumulator step is 65-bit signed"),
             (lambda: cfa.sum(wide, math=cf.Math(accumulator=fmt(70, 0))),
              "the accumulator format is 70-bit signed"),
+            (lambda: cfa.sum(raw_array([1, 1], fmt(16, 0)), math=cf.Math(accumulator=fmt(16, 60))),
+             "aligning each 16-bit signed term to accumulator precision 60"),
+            (lambda: cfa.sum(raw_array([1, 1], fmt(8, 8)), math=cf.Math(accumulator=fmt(62, 0))),
+             "aligning the 62-bit signed accumulator to term precision 8"),
             (lambda: cfa.dot(raw_array([[1, 1]], fmt(32, 0), complex=True),
                              raw_array([[1, 1]], fmt(32, 0), complex=True)),
              "the full product is 65-bit signed"),
-            (lambda: cfa.dot(wide[:1].quantize(fmt(8, 0)), wide[:1].quantize(fmt(8, 0)),
+            (lambda: cfa.dot(raw_array([1], fmt(8, 0)), raw_array([1], fmt(8, 0)),
                              math=cf.Math(product=fmt(64, 0, False))),
              "the product format is 64-bit unsigned"),
+            (lambda: cfa.dot(raw_array([1], fmt(16, 0)), raw_array([1], fmt(16, 0)),
+                             math=cf.Math(product=fmt(16, 80))),
+             "converting each 32-bit signed product to product precision 80"),
             (lambda: cfa.sum(raw_array([[1, 1]], fmt(8, 0), complex=True),
                              math=cf.Math(accumulator=fmt(8, 0, False))),
              "signed binary format; the accumulator format is 8-bit unsigned")):
         with pytest.raises(ValueError, match=stage):
             call()
+    # The hint appears exactly when one more bit than a term is representable.
+    for width, signed in ((63, True), (62, False)):
+        terms = raw_array([1] * 3, fmt(width, 0, signed))
+        with pytest.raises(ValueError, match=hint):
+            cfa.sum(terms)
+        assert cfa.sum(terms, math=cf.Math(accumulator=fmt(width, 0, signed))).raw.tolist() == 3
     small = raw_array([1, 1], fmt(16, 0))
     with pytest.raises(ValueError, match=domain):
         cfa.sum(small, math=cf.Math(accumulator=fmt(16, 60)))     # term alignment
@@ -728,6 +754,210 @@ def test_numpy_reductions_accept_every_default_spelling():
         np.sum(x, None, None, None, False, 0)
     with pytest.raises(TypeError, match="dtype, initial"):
         np.add.reduce(x, 0, np.int64, None, False, 0)
+
+
+class Duck:
+    """A foreign array-like that answers every NumPy protocol call itself."""
+
+    def __array_function__(self, func, types, args, kwargs):
+        return "duck"
+
+    def __array_ufunc__(self, ufunc, method, *inputs, **kwargs):
+        return "duck"
+
+    def __matmul__(self, other):
+        return "duck"
+
+    def __rmatmul__(self, other):
+        return "duck"
+
+
+NO = np._NoValue
+# Every way to spell a reduction of one operand, by entry point.
+UNARY_SPELLINGS = {
+    "np.sum(x)": lambda x: np.sum(x),
+    "np.sum(a=x)": lambda x: np.sum(a=x),
+    "np.sum(x, None)": lambda x: np.sum(x, None),
+    "np.sum(x, 0)": lambda x: np.sum(x, 0),
+    "np.sum(x, -1)": lambda x: np.sum(x, -1),
+    "np.sum(x, axis=1)": lambda x: np.sum(x, axis=1),
+    "np.sum(x, axis=np.int64(0))": lambda x: np.sum(x, axis=np.int64(0)),
+    "np.sum(x, axis=2)": lambda x: np.sum(x, axis=2),
+    "np.sum(x, axis=-3)": lambda x: np.sum(x, axis=-3),
+    "np.sum(x, axis=0, keepdims=True)": lambda x: np.sum(x, axis=0, keepdims=True),
+    "np.sum(x, keepdims=True)": lambda x: np.sum(x, keepdims=True),
+    "np.sum(x, None, None)": lambda x: np.sum(x, None, None),
+    "np.sum(x, dtype=None)": lambda x: np.sum(x, dtype=None),
+    "np.sum(x, 0, None, None, False)": lambda x: np.sum(x, 0, None, None, False),
+    "np.sum(x, where=True)": lambda x: np.sum(x, where=True),
+    "np.sum(x, keepdims=NO)": lambda x: np.sum(x, keepdims=NO),
+    "np.sum(x, initial=NO)": lambda x: np.sum(x, initial=NO),
+    "np.sum(x, where=NO)": lambda x: np.sum(x, where=NO),
+    "np.sum(x, keepdims=NO, initial=NO, where=NO)":
+        lambda x: np.sum(x, keepdims=NO, initial=NO, where=NO),
+    "np.sum(x, 1.0)": lambda x: np.sum(x, 1.0),
+    "np.sum(x, True)": lambda x: np.sum(x, True),
+    "np.add.reduce(x)": lambda x: np.add.reduce(x),
+    "np.add.reduce(array=x)": lambda x: np.add.reduce(array=x),
+    "np.add.reduce(x, 0)": lambda x: np.add.reduce(x, 0),
+    "np.add.reduce(x, -1)": lambda x: np.add.reduce(x, -1),
+    "np.add.reduce(x, 1)": lambda x: np.add.reduce(x, 1),
+    "np.add.reduce(x, None)": lambda x: np.add.reduce(x, None),
+    "np.add.reduce(x, axis=2)": lambda x: np.add.reduce(x, axis=2),
+    "np.add.reduce(x, axis=None, keepdims=True)": lambda x: np.add.reduce(x, axis=None, keepdims=True),
+    "np.add.reduce(array=x, axis=-1, keepdims=True)":
+        lambda x: np.add.reduce(array=x, axis=-1, keepdims=True),
+    "np.add.reduce(x, 0, None)": lambda x: np.add.reduce(x, 0, None),
+    "np.add.reduce(x, 0, None, None, False)": lambda x: np.add.reduce(x, 0, None, None, False),
+    "np.add.reduce(x, dtype=None)": lambda x: np.add.reduce(x, dtype=None),
+    "np.add.reduce(x, where=True)": lambda x: np.add.reduce(x, where=True),
+    "np.add.reduce(x, initial=NO)": lambda x: np.add.reduce(x, initial=NO),
+    "np.add.reduce(x, where=NO)": lambda x: np.add.reduce(x, where=NO),
+    "np.add.reduce(x, keepdims=NO)": lambda x: np.add.reduce(x, keepdims=NO),
+    "x.sum()": lambda x: x.sum(),
+    "x.sum(0)": lambda x: x.sum(0),
+    "x.sum(axis=-1)": lambda x: x.sum(axis=-1),
+    "x.sum(axis=1, keepdims=True)": lambda x: x.sum(axis=1, keepdims=True),
+    "x.sum(axis=2)": lambda x: x.sum(axis=2),
+}
+BINARY_SPELLINGS = {
+    "np.matmul(a, b)": lambda a, b: np.matmul(a, b),
+    "a @ b": lambda a, b: a @ b,
+}
+UNARY_OPERANDS = {"matrix": np.arange(6).reshape(2, 3) - 2, "vector": np.array([3, -1, 2]),
+                  "zero-dimensional": np.array(5), "empty": np.zeros((0, 3), dtype=np.int64)}
+BINARY_OPERANDS = {
+    "vector, vector": (np.array([3, -1, 2]), np.array([1, 4, -2])),
+    "matrix, vector": (np.arange(6).reshape(2, 3), np.array([1, 4, -2])),
+    "vector, matrix": (np.array([3, -1]), np.arange(6).reshape(2, 3)),
+    "matrix, matrix": (np.arange(6).reshape(2, 3), np.arange(12).reshape(3, 4)),
+    "stack, matrix": (np.arange(24).reshape(4, 2, 3), np.arange(6).reshape(3, 2)),
+    "broadcast stacks": (np.arange(12).reshape(2, 1, 2, 3), np.arange(18).reshape(3, 3, 2)),
+    "mismatched vectors": (np.array([3, -1, 2]), np.array([1, 4])),
+    "mismatched matrices": (np.arange(6).reshape(2, 3), np.arange(6).reshape(2, 3)),
+    "mismatched stacks": (np.arange(12).reshape(2, 2, 3), np.arange(18).reshape(3, 3, 2)),
+    "zero-dimensional, vector": (np.array(5), np.array([1, 4, -2])),
+    "vector, zero-dimensional": (np.array([1, 4, -2]), np.array(5)),
+}
+WIDE = fmt(12, 0)
+
+
+def assert_same_outcome(call, reference, operands):
+    """The fixed-point call accepts or rejects exactly as the ndarray call does."""
+    try:
+        expected = call(*reference)
+    except (TypeError, ValueError):
+        with pytest.raises((TypeError, ValueError)):
+            call(*operands)
+        return
+    result = call(*operands)
+    assert isinstance(result, cfa.Array) and result.shape == np.shape(expected)
+    np.testing.assert_array_equal(result.raw, expected)
+
+
+@pytest.mark.parametrize("spelling", UNARY_SPELLINGS)
+@pytest.mark.parametrize("operand", UNARY_OPERANDS)
+def test_unary_reduction_spellings_accept_and_reject_as_numpy_does(spelling, operand):
+    raw = UNARY_OPERANDS[operand]
+    assert_same_outcome(UNARY_SPELLINGS[spelling], (raw,), (raw_array(raw, WIDE),))
+
+
+@pytest.mark.parametrize("spelling", BINARY_SPELLINGS)
+@pytest.mark.parametrize("operands", BINARY_OPERANDS)
+def test_matmul_spellings_accept_and_reject_as_numpy_does(spelling, operands):
+    a, b = BINARY_OPERANDS[operands]
+    assert_same_outcome(BINARY_SPELLINGS[spelling], (a, b), (raw_array(a, WIDE), raw_array(b, WIDE)))
+    if a.ndim == b.ndim == 1:
+        for dot in (np.dot, lambda a, b: np.dot(a=a, b=b), lambda a, b: np.dot(a, b, None)):
+            assert_same_outcome(dot, (a, b), (raw_array(a, WIDE), raw_array(b, WIDE)))
+
+
+def test_out_spellings_match_numpy():
+    raw = np.arange(6).reshape(2, 3)
+    x = raw_array(raw, WIDE)
+    for call, shape in ((lambda x, out: np.sum(x, 0, None, out), (3,)),
+                        (lambda x, out: np.sum(x, axis=1, out=out), (2,)),
+                        (lambda x, out: np.sum(x, out=out), ()),
+                        (lambda x, out: np.add.reduce(x, 0, None, out), (3,)),
+                        (lambda x, out: np.add.reduce(x, axis=1, out=(out,)), (2,)),
+                        (lambda x, out: x.sum(axis=0, out=out), (3,)),
+                        (lambda x, out: np.matmul(x, x[0], out=out), (2,)),
+                        (lambda x, out: np.matmul(x, x[0], out=(out,)), (2,)),
+                        (lambda x, out: np.dot(x[0], x[1], out), ())):
+        reference = np.empty(shape, dtype=np.int64)
+        call(raw, reference)
+        out = cfa.empty(shape, format=fmt(16, 0))
+        assert call(x, out) is out
+        np.testing.assert_array_equal(out.raw, reference)
+        with pytest.raises(ValueError, match="shape and complexity"):
+            call(x, cfa.empty(shape + (4,), format=fmt(16, 0)))
+        with pytest.raises(TypeError):
+            call(x, reference)                  # an ndarray destination has no format
+
+
+def test_documented_differences_from_numpy_fail_explicitly():
+    raw = np.arange(6).reshape(2, 3)
+    x, zero_d = raw_array(raw, WIDE), raw_array(5, WIDE)
+    # Each of these succeeds on a plain ndarray and is rejected here by design.
+    for call in (lambda x: np.sum(x, dtype=np.int64), lambda x: np.sum(x, initial=0),
+                 lambda x: np.sum(x, where=np.array([True, False, True])),
+                 lambda x: np.sum(x, axis=(0, 1)), lambda x: np.sum(x, axis=()),
+                 lambda x: np.sum(x, keepdims=1), lambda x: np.add.reduce(x, dtype=np.int64),
+                 lambda x: np.add.reduce(x, initial=0), lambda x: np.add.reduce(x, initial=None),
+                 lambda x: np.add.reduce(x, where=np.array([True, False, True])),
+                 lambda x: np.add.reduce(x, axis=(0, 1)), lambda x: np.add.reduce(x, keepdims=1),
+                 lambda x: x.sum(axis=(0, 1)), lambda x: np.dot(x, x[0]),
+                 lambda x: np.matmul(x, x[0], axes=[(0, 1), (0,), (0,)]),
+                 lambda x: np.matmul(x, x[0], dtype=np.int64),
+                 lambda x: np.matmul(x, x[0], casting="unsafe")):
+        call(raw)
+        with pytest.raises((TypeError, ValueError)):
+            call(x)
+    with pytest.raises(ValueError, match="one-dimensional"):
+        np.dot(zero_d, zero_d)                  # NumPy multiplies zero-dimensional operands
+    assert np.dot(np.array(5), np.array(5)) == 25
+
+
+def test_ndarrays_are_rejected_and_foreign_types_are_deferred_to():
+    raw = np.arange(6).reshape(2, 3)
+    x, duck = raw_array(raw, WIDE), Duck()
+    masked = np.ma.array(raw[0])
+    calls = {
+        "np.dot": (lambda a, b: np.dot(a, b), 0),
+        "np.matmul": (lambda a, b: np.matmul(a, b), 0),
+        "@": (lambda a, b: a @ b, 0),
+    }
+    # Bare ndarrays and ndarray subclasses carry no format: both orders are
+    # rejected with a TypeError, never coerced.
+    for name, (call, row) in calls.items():
+        for other in (raw[row], masked):
+            for a, b in ((x[row], other), (other, x[row])):
+                with pytest.raises(TypeError):
+                    call(a, b)
+    for call in (lambda: np.sum(x, out=np.empty(())), lambda: np.add.reduce(x, out=np.empty(3)),
+                 lambda: np.concatenate([x, raw]), lambda: np.concatenate([raw, x]),
+                 lambda: np.concatenate([x, masked[None]])):
+        with pytest.raises(TypeError):
+            call()
+    # A foreign type's own handler answers in either operand order, for
+    # supported and unsupported functions alike.
+    for call in (lambda: np.dot(x[0], duck), lambda: np.dot(duck, x[0]),
+                 lambda: np.matmul(x, duck), lambda: np.matmul(duck, x),
+                 lambda: x @ duck, lambda: duck @ x,
+                 lambda: np.sum(x, out=duck), lambda: np.add.reduce(x, out=duck),
+                 lambda: np.sum(duck, out=cfa.empty((), format=WIDE)),
+                 lambda: np.concatenate([x, duck]), lambda: np.concatenate([duck, x]),
+                 lambda: np.vdot(x[0], duck), lambda: np.add(x, duck), lambda: np.add(duck, x)):
+        assert call() == "duck"
+
+    class Silent:
+        def __array_function__(self, func, types, args, kwargs):
+            return NotImplemented
+
+    for call in (lambda: np.dot(x[0], Silent()), lambda: np.sum(x, out=Silent()),
+                 lambda: np.concatenate([Silent(), x])):
+        with pytest.raises(TypeError, match="no implementation found"):
+            call()
 
 
 # --- scalar reference and FIR-style fixture ----------------------------------

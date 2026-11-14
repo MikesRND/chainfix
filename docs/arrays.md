@@ -122,8 +122,8 @@ complex, lists, tuples, and bare ndarrays. Unsupported arithmetic such as
 `z + 1.5` also raises `TypeError`. Explicit `cfa.*` functions reject unsupported
 operands, including sentinel equality comparisons.
 
-NumPy ufuncs return `NotImplemented` for foreign operand types so their own
-handlers can participate. Recognized unsupported NumPy scalars and bare ndarrays
+NumPy ufuncs and array functions return `NotImplemented` for foreign operand
+types so their own handlers can participate, in either operand order. Recognized unsupported NumPy scalars and bare ndarrays
 still raise. Some NumPy scalar-left comparison operators first convert themselves
 to a bare zero-dimensional ndarray and are therefore rejected; explicit calls
 such as `np.equal(np.int64(1), z)` preserve the scalar and are supported.
@@ -255,7 +255,9 @@ sum formats.
 
 `cfa.sum(x, axis=None, *, keepdims=False, out=None, math=None)` reduces every
 logical sample in C order, or one integer axis (negative values count from the
-end). `x.sum(...)` is the same function. Axis tuples are not supported.
+end). `x.sum(...)` is the same function. Axis tuples are not supported. As in
+NumPy, axis `0` or `-1` is accepted for a zero-dimensional array and reduces its
+single sample.
 
 `cfa.dot(a, b)` is the inner product of two one-dimensional arrays of equal
 length. It does **not** conjugate either operand. `cfa.matmul(a, b)` and the `@`
@@ -273,8 +275,10 @@ ndarrays. They always return an array: a full reduction is zero-dimensional, and
 The same checked int64 domain applies. The full product format, each aligned
 operand, each exact accumulator step, and a full sum with its guard bits must
 all be representable; otherwise the call raises `ValueError` before executing,
-naming the stage and its width, even if a bounded policy would produce a small
-result. For example, a full sum
+even if a bounded policy would produce a small result. The message names the
+product, accumulator, alignment, or full-sum stage that failed. A sum format or
+destination that cannot be reached reports the same generic conversion error as
+elementwise operations. For example, a full sum
 of two signed 64-bit terms and a full `dot` of two-element signed 32-bit vectors
 are rejected. With an explicit accumulator only each single step must fit, not
 the unbounded total.
@@ -295,8 +299,8 @@ timing gate):
 
 | Workload | Exact | Bounded product | Bounded product and accumulator |
 |---|---|---|---|
-| `matmul`, (4096, 64) by (64,) | 0.64 ms | 2.5 ms | 2.8 ms |
-| `dot`, 4096 terms | 0.03 ms | 0.05 ms | 24.7 ms |
+| `matmul`, (4096, 64) by (64,) | 0.66 ms | 2.6 ms | 2.9 ms |
+| `dot`, 4096 terms | 0.03 ms | 0.06 ms | 24.5 ms |
 
 ```bash
 python benchmarks/reductions.py --cpu 2
@@ -313,9 +317,11 @@ is supported. `dtype`, `casting`, and other extra keywords are rejected.
 [reduction](#reductions) engine under the active context. `np.sum` reduces every
 axis by default and `np.add.reduce` the first, as in NumPy. They accept `axis`,
 `keepdims`, and `out` where NumPy does, by position or keyword. `dtype=None` and
-the literal Python `where=True` are accepted as NumPy's defaults; any other
-`dtype` or `where`, `initial`, axis tuples, and `np.matmul`'s `axes` are
-rejected.
+the literal Python `where=True` are accepted as NumPy's defaults, as is NumPy's
+`np._NoValue` placeholder wherever a plain ndarray accepts it. Any other `dtype`
+or `where`, `initial`, non-boolean `keepdims`, axis tuples, and `np.matmul`'s
+`axes` are rejected. Bare ndarrays and ndarray subclasses are rejected as
+operands and destinations.
 
 Other ufuncs, other ufunc methods such as `accumulate`/`at`/`outer` and
 `reduce` of anything but `np.add`, and other NumPy array functions fail

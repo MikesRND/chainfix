@@ -15,7 +15,10 @@
 """Cost of the reduction stages on a FIR-style frame and a long inner product.
 
 Compares exact reduction with a bounded product stage and with an ordered,
-bounded accumulator. Diagnostic only: there is no timing threshold.
+bounded accumulator. Policies are built once, outside the timed calls, and each
+round repeats a call enough times to last about 20 ms, so microsecond-scale
+cases are not dominated by one cold call. Diagnostic only: there is no timing
+threshold.
 """
 
 import argparse
@@ -61,9 +64,9 @@ def workloads(frame, taps):
                 lambda a=a, b=b, p=policy: cfa.dot(a, b, math=p))
             if policy.product == "full" or policy.accumulator != "full":
                 # A plain sum has no product stage to bound.
-                cases[f"{kind} sum ({frame},): {name}"] = (
-                    lambda a=a, p=policy: cfa.sum(a, math=cf.Math(
-                        accumulator=p.accumulator, rounding=p.rounding, overflow=p.overflow)))
+                plain = cf.Math(accumulator=policy.accumulator, rounding=policy.rounding,
+                                overflow=policy.overflow)
+                cases[f"{kind} sum ({frame},): {name}"] = lambda a=a, p=plain: cfa.sum(a, math=p)
     return cases
 
 
@@ -72,6 +75,8 @@ def main():
     parser.add_argument("--frame", type=int, default=4096)
     parser.add_argument("--taps", type=int, default=64)
     parser.add_argument("--rounds", type=int, default=7)
+    parser.add_argument("--round-ms", type=float, default=20.0,
+                        help="approximate duration of one timed round")
     parser.add_argument("--cpu", type=int)
     parser.add_argument("--output")
     args = parser.parse_args()
@@ -80,15 +85,21 @@ def main():
     results = {}
     for name, function in workloads(args.frame, args.taps).items():
         function()
+        start = perf_counter_ns()
+        function()
+        number = max(1, int(args.round_ms * 1e6 // max(1, perf_counter_ns() - start)))
         times = []
         for _ in range(args.rounds):
             start = perf_counter_ns()
-            function()
-            times.append((perf_counter_ns() - start) / 1e3)
-        results[name] = {"median_us": statistics.median(times), "min_us": min(times)}
-        print(f"{name:62s} {results[name]['median_us']:12.1f} us")
+            for _ in range(number):
+                function()
+            times.append((perf_counter_ns() - start) / number / 1e3)
+        results[name] = {"median_us": statistics.median(times), "min_us": min(times),
+                         "calls_per_round": number}
+        print(f"{name:62s} {results[name]['median_us']:12.1f} us  ({number} calls/round)")
     report = {"python": sys.version, "numpy": np.__version__, "platform": platform.platform(),
-              "frame": args.frame, "taps": args.taps, "rounds": args.rounds, "results": results}
+              "frame": args.frame, "taps": args.taps, "rounds": args.rounds,
+              "round_ms": args.round_ms, "results": results}
     if args.output:
         with open(args.output, "w") as stream:
             json.dump(report, stream, indent=2)
