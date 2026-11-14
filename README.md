@@ -175,6 +175,9 @@ Note that resulting data type has insufficinet range to represent the value pi.
 
 # Contributing
 
+See [CONTRIBUTING.md](CONTRIBUTING.md) for PR titles, squash merging, and release
+policy.
+
 ## Package Installation
 
 Python 3.12 or newer is required. The scalar package has no runtime dependencies.
