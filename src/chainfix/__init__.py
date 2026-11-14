@@ -29,6 +29,18 @@ __all__ = [
     'BinaryContext',
     'get_binary_context',
     'set_binary_context',
+    'local_binary_context',
+    'Format',
+    'Math',
+    'Overflow',
+    'Rounding',
+    'FixedPointOverflowError',
+    'add',
+    'subtract',
+    'multiply',
+    'positive',
+    'negative',
+    'absolute',
 ]
 
 from chainfix.binary import Fixb
@@ -39,6 +51,10 @@ from chainfix.context import get_binary_context
 from chainfix.context import get_decimal_context
 from chainfix.context import set_binary_context
 from chainfix.context import set_decimal_context
+from chainfix.context import local_binary_context
+from chainfix.format import Format
+from chainfix.policy import Math, Overflow, Rounding, FixedPointOverflowError
+from chainfix.binary import add, subtract, multiply, positive, negative, absolute
 from chainfix.decimal import Fixd
 from chainfix.decimal import Ufixd
 from chainfix.helpers import Fixb32
