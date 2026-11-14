@@ -12,6 +12,9 @@ jobs:
   tests:
     name: "${{ matrix.tox-env }}"
     runs-on: "ubuntu-latest"
+    permissions:
+      contents: read
+      id-token: write
 
     strategy:
       fail-fast: false
@@ -47,4 +50,4 @@ jobs:
           flags: ${{ matrix.coverage-flag }}
           name: ${{ matrix.tox-env }}
           fail_ci_if_error: false
-          token: ${{ secrets.CODECOV_TOKEN }}
+          use_oidc: true
