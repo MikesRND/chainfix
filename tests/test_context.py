@@ -25,8 +25,7 @@ from types import SimpleNamespace
 
 import pytest
 
-import chainfix as cf
-from chainfix import Fixb, Fixd, Overflow
+from chainfix import Fixb, Fixd
 from chainfix.context import (
     BinaryContext,
     DecimalContext,
@@ -41,16 +40,16 @@ from chainfix.context import (
 )
 
 BINARY = SimpleNamespace(cls=BinaryContext, other=DecimalContext, default=DefaultBinaryContext,
-                         library=(32, 16), get=get_binary_context, set=set_binary_context,
-                         local=local_binary_context, scalar=Fixb)
+                         base=2, library=(32, 16), get=get_binary_context,
+                         set=set_binary_context, local=local_binary_context, scalar=Fixb)
 DECIMAL = SimpleNamespace(cls=DecimalContext, other=BinaryContext, default=DefaultDecimalContext,
-                          library=(256, 18), get=get_decimal_context, set=set_decimal_context,
-                          local=local_decimal_context, scalar=Fixd)
+                          base=10, library=(256, 18), get=get_decimal_context,
+                          set=set_decimal_context, local=local_decimal_context, scalar=Fixd)
 KINDS = pytest.mark.parametrize("kind", [BINARY, DECIMAL], ids=["binary", "decimal"])
 
 
-def sizes(scalar):
-    return scalar.wordlength, scalar.precision
+def sizes(value):
+    return value.wordlength, value.precision
 
 
 @KINDS
@@ -59,24 +58,27 @@ def test_default_is_installed_without_copy_and_is_frozen(kind):
         assert kind.get() is kind.default
         kind.set(kind.default)
         assert kind.get() is kind.default
-        for attr, value in (("wordlength", 20), ("precision", 5), ("overflow", Overflow.WRAP)):
+        for attr, value in (("wordlength", 20), ("precision", 5), ("overflow", "wrap")):
             with pytest.raises(AttributeError):
                 setattr(kind.default, attr, value)
+        # Re-running __init__ is a no-op, so the default and its hash stay fixed.
+        before = hash(kind.default)
+        members = {kind.default}
+        kind.default.__init__(wordlength=8, precision=2)
+        assert sizes(kind.default) == kind.library
+        assert hash(kind.default) == before and kind.default in members
         assert sizes(kind.scalar()) == kind.library
     Context().run(check)
     # Nothing can reconfigure the library defaults that an empty context sees.
-    assert (kind.default.wordlength, kind.default.precision) == kind.library
     assert Context().run(lambda: sizes(kind.scalar())) == kind.library
 
 
 @KINDS
 def test_setting_custom_context(kind):
     def check():
-        custom = kind.cls(wordlength=20, precision=5, overflow=Overflow.WRAP)
+        custom = kind.cls(wordlength=20, precision=5)
         kind.set(custom)
-        current = kind.get()
-        assert current is custom
-        assert (current.wordlength, current.precision, current.overflow) == (20, 5, Overflow.WRAP)
+        assert kind.get() is custom
         assert sizes(kind.scalar()) == (20, 5)
         with pytest.raises(AttributeError):
             custom.precision = 8
@@ -86,12 +88,17 @@ def test_setting_custom_context(kind):
 
 @KINDS
 def test_setters_and_scopes_reject_other_kinds(kind):
-    for value in (None, kind.other(), "context"):
+    def check():
+        before = kind.get()
+        for value in (None, kind.other(), "context"):
+            with pytest.raises(TypeError):
+                kind.set(value)
+            assert kind.get() is before
         with pytest.raises(TypeError):
-            kind.set(value)
-        with pytest.raises(TypeError):
-            with kind.local(value if value is not None else kind.other()):
+            with kind.local(kind.other()):
                 pass
+        assert kind.get() is before
+    Context().run(check)
 
 
 @KINDS
@@ -99,19 +106,19 @@ def test_setters_and_scopes_reject_other_kinds(kind):
 def test_child_tasks_cannot_change_the_parent_context(kind, primed):
     async def child():
         with pytest.raises(AttributeError):
-            kind.get().rounding = "floor"
-        kind.set(kind.get().replace(rounding="floor"))
-        return kind.get().rounding
+            kind.get().precision = 3
+        kind.set(kind.get().replace(precision=3))
+        return kind.get().precision
 
     async def parent():
         if primed:
             kind.get()
         before = kind.get()
-        assert await asyncio.create_task(child()) is cf.Rounding.FLOOR
+        assert await asyncio.create_task(child()) == 3
         assert kind.get() is before
-        return kind.get().rounding
+        return kind.get().precision
 
-    assert Context().run(asyncio.run, parent()) is cf.Rounding.NEAREST_EVEN
+    assert Context().run(asyncio.run, parent()) == kind.library[1]
 
 
 @KINDS
@@ -122,15 +129,17 @@ def test_local_scopes_restore_nest_and_validate_before_binding(kind):
             with kind.local(precision=3) as outer:
                 assert kind.get() is outer
                 assert outer.precision == 3
-                with kind.local(outer, wordlength=24, rounding="ceil") as inner:
-                    assert (inner.wordlength, inner.precision) == (24, 3)
-                    assert inner.rounding is cf.Rounding.CEIL
+                with kind.local(outer, wordlength=24) as inner:
+                    assert sizes(inner) == (24, 3)
                     assert sizes(kind.scalar()) == (24, 3)
                 assert kind.get() is outer
                 raise RuntimeError("restore the entry binding")
         assert kind.get() is before
-        for bad in ({"wordlength": 0}, {"precision": 1.5}, {"rounding": "invalid"},
-                    {"math": cf.Math(), "overflow": "wrap"}, {"math": "full"}):
+        with kind.local(kind.default) as same:
+            assert same is kind.default
+        with kind.local(precision=None) as unchanged:
+            assert unchanged is before
+        for bad in ({"wordlength": 0}, {"wordlength": True}, {"precision": 1.5}):
             with pytest.raises((TypeError, ValueError)):
                 with kind.local(**bad):
                     pass
@@ -139,23 +148,43 @@ def test_local_scopes_restore_nest_and_validate_before_binding(kind):
 
 
 @KINDS
-def test_contexts_are_values(kind):
-    context = kind.cls(20, 5, Overflow.WRAP)
-    same = kind.cls(20, 5, Overflow.WRAP)
+def test_local_scopes_work_as_decorators(kind):
+    @kind.local(precision=3)
+    def scoped_sizes():
+        return sizes(kind.scalar())
+
+    def check():
+        expected = (kind.library[0], 3)
+        assert scoped_sizes() == scoped_sizes() == expected
+        assert kind.get() is kind.default
+    Context().run(check)
+
+
+@KINDS
+def test_contexts_are_final_values(kind):
+    context = kind.cls(20, 5)
+    same = kind.cls(20, 5)
     assert context == same and hash(context) == hash(same)
-    assert context != kind.cls(20, 6, Overflow.WRAP)
-    assert context != kind.other(20, 5, Overflow.WRAP)
+    assert context != kind.cls(20, 6)
+    assert context != kind.other(20, 5)
     assert context != (20, 5)
+    assert context.base == kind.cls.base == kind.base
+    assert context.replace() is context
+    assert context.replace(wordlength=None, precision=None) is context
+    with pytest.raises(TypeError, match="unknown context setting"):
+        context.replace(scale=3)
     restored = pickle.loads(pickle.dumps(context))
     assert restored == context and type(restored) is kind.cls
     assert copy.copy(context) is context
     assert copy.deepcopy(context) is context
-    for attr in ("wordlength", "precision", "math", "rounding", "overflow", "unrelated"):
+    for attr in ("wordlength", "precision", "base", "unrelated"):
         with pytest.raises(AttributeError, match="immutable; use replace"):
             delattr(context, attr)
     with pytest.raises(AttributeError, match="immutable; use replace"):
         context.unrelated = 1
-    assert repr(context).startswith(f"{kind.cls.__name__}(wordlength=20, precision=5, math=Math(")
+    assert repr(context).startswith(f"{kind.cls.__name__}(wordlength=20, precision=5")
+    with pytest.raises(TypeError, match="final"):
+        type("Derived", (kind.cls,), {"__slots__": ()})
     if sys.version_info >= (3, 13):
         assert copy.replace(context, precision=6) == context.replace(precision=6)
 

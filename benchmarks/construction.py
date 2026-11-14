@@ -15,10 +15,11 @@
 """Compare scalar and array construction timings with a Git snapshot.
 
 Example: python benchmarks/construction.py --baseline origin/main --cpu 2
-Each case is timed with ambient context defaults (a context lookup) and, where
-the API allows, with an explicit format and math (no lookup). Array cases run
-only when NumPy is installed. This is a local diagnostic, not a CI timing gate;
-imports, warmup, and source extraction are outside the timed regions.
+Calls without format= and math= read the active context, including calls that
+pass only sizes such as Fixb32(f) or Fixd(f, 32, 4); calls with both skip the
+lookup. Array cases run only when NumPy is installed. This is a local
+diagnostic, not a CI timing gate; imports, warmup, and source extraction are
+outside the timed regions.
 """
 
 import argparse

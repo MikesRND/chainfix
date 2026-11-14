@@ -158,10 +158,10 @@ When `Fixb` is used to store a negative number, the MSB of the stored integer is
 
 # Contexts
 
-A context supplies the default `wordlength` and `precision` for new values and the
-arithmetic policy (`math`) for binary operations. Contexts are immutable: derive a
+A context supplies the default `wordlength` and `precision` for new values and,
+for binary values, the arithmetic policy (`math`). Contexts are immutable: derive a
 changed one with `replace()` and activate it for a block or for the rest of the
-current execution context.
+current execution context. There is no process-wide default to reconfigure.
 
 The active context can be retrieved using
 
@@ -204,7 +204,8 @@ Fixd(3.14159, 20, 5)
 
 `local_binary_context`, `set_binary_context`, and `BinaryContext.replace()` work
 the same way and also accept policy settings such as `rounding="floor"` or
-`math=Math(...)`. Assigning to a context attribute raises `AttributeError`.
+`math=Math(...)`. Decimal contexts hold only `wordlength` and `precision`.
+Assigning to a context attribute raises `AttributeError`.
 
 When passed through the constructor, the values for `wordlength` and `precision` always take precedence over the
 context.
