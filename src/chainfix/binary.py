@@ -21,7 +21,7 @@ from dataclasses import replace
 from decimal import Decimal
 from fractions import Fraction
 import operator
-from typing import Self
+from typing import Self, TYPE_CHECKING
 
 from chainfix._exact import overflow_raw, quantize_raw, scaled_ratio, convert_ratio, value_ratio
 from chainfix.context import get_binary_context
@@ -31,6 +31,9 @@ from chainfix.format import (
     _unary_format,
 )
 from chainfix.policy import FixedPointOverflowError, Math, Overflow
+
+if TYPE_CHECKING:
+    from chainfix.complex import CFixb
 
 __all__ = ["Fixb", "Ufixb", "add", "subtract", "multiply", "positive", "negative", "absolute"]
 
@@ -238,6 +241,11 @@ def _operand(value):
 
 
 def _binary_operation(a, b, operation: str, math: Math | None = None):
+    # Import at dispatch time: complex scalars reuse this module's real engine.
+    from chainfix.complex import CFixb, _complex_operation
+
+    if isinstance(a, CFixb) or isinstance(b, CFixb):
+        return _complex_operation(a, b, operation, math)
     a, b = _operand(a), _operand(b)
     if a is NotImplemented or b is NotImplemented:
         return NotImplemented
@@ -263,23 +271,27 @@ def _explicit(a, b, operation: str, math: Math | None):
     return result
 
 
-def add(a, b, *, math: Math | None = None) -> Fixb | Ufixb:
+def add(a, b, *, math: Math | None = None) -> Fixb | Ufixb | CFixb:
     """Add exactly, then apply the sum result format."""
     return _explicit(a, b, "add", math)
 
 
-def subtract(a, b, *, math: Math | None = None) -> Fixb | Ufixb:
+def subtract(a, b, *, math: Math | None = None) -> Fixb | Ufixb | CFixb:
     """Subtract exactly, then apply the sum result format."""
     return _explicit(a, b, "subtract", math)
 
 
-def multiply(a, b, *, math: Math | None = None) -> Fixb | Ufixb:
+def multiply(a, b, *, math: Math | None = None) -> Fixb | Ufixb | CFixb:
     """Multiply original stored integers, then apply the product result format."""
     return _explicit(a, b, "multiply", math)
 
 
-def positive(value) -> Fixb | Ufixb:
+def positive(value) -> Fixb | Ufixb | CFixb:
     """Return a generic scalar with unchanged value and format."""
+    from chainfix.complex import CFixb
+
+    if isinstance(value, CFixb):
+        return +value
     value = _operand(value)
     if value is NotImplemented:
         raise TypeError("positive requires a binary fixed-point value or integer")
@@ -287,6 +299,12 @@ def positive(value) -> Fixb | Ufixb:
 
 
 def _unary(value, *, absolute: bool, math: Math | None):
+    from chainfix.complex import CFixb, _complex_unary
+
+    if isinstance(value, CFixb):
+        if absolute:
+            raise TypeError("complex absolute value is unsupported; use mag2()")
+        return _complex_unary(value, conjugate=False, math=math)
     value = _operand(value)
     if value is NotImplemented:
         raise TypeError("unary arithmetic requires a binary fixed-point value or integer")
@@ -297,7 +315,7 @@ def _unary(value, *, absolute: bool, math: Math | None):
     return _result(quantize_raw(raw, full.precision, target, policy), target)
 
 
-def negative(value, *, math: Math | None = None) -> Fixb | Ufixb:
+def negative(value, *, math: Math | None = None) -> Fixb | Ufixb | CFixb:
     """Negate with declared-range growth, then apply the sum result format."""
     return _unary(value, absolute=False, math=math)
 

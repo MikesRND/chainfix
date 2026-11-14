@@ -1,10 +1,12 @@
-# Real binary arithmetic
+# Binary arithmetic
 
-Binary scalars support `+`, `-`, `*`, their reflected forms, unary `+`/`-`, `abs`,
+Real binary scalars support `+`, `-`, `*`, their reflected forms, unary `+`/`-`, `abs`,
 exact numeric comparisons, and hashing. Results are generic `Fixb` or `Ufixb`
 values, including operations on the fixed-width helpers `Fixb32` and `Ufixb32`.
-This is the real-scalars stage of the planned 0.2.0 release; no release is published
-as part of this change.
+Complex `CFixb` scalars support the same arithmetic signs and exact equality,
+along with conjugation and magnitude squared. Their shared component format is
+signed. Complex ordering and absolute value are unsupported. See
+[complex scalars](#complex-scalars) for their construction and growth rules.
 
 ## Operators and scoped policies
 
@@ -185,7 +187,88 @@ precision 2 gives `0.25`; converting that to precision 1 gives `0.0`. Direct
 conversion to precision 1 gives `0.5`. An expression does not fuse away these
 rounding steps.
 
-## Bit shifts and exact scaling
+## Complex scalars
+
+`CFixb` stores two Python integers and one signed binary `Format`. The default
+component dimensions follow the binary context (32 bits, precision 16). Supply
+either a single value or keyword-only `real=`/`imag=` components:
+
+```python
+z = cf.CFixb(0.5 + 0.25j, 16, 14)
+z = cf.CFixb(0.5 + 0.25j, format=q14, math=dsp)
+z = cf.CFixb(real=Fraction(1, 2), imag=Fraction(1, 4), format=q14)
+z = cf.CFixb.from_raw(i=8192, q=4096, format=q14)
+
+with cf.local_binary_context(math=dsp):
+    mixed = z * z.conjugate() + a
+power = z.mag2()
+converted = z.quantize(q14, math=dsp)
+```
+
+Omitted values/components default to zero. An explicitly supplied `value`, even
+zero, cannot be combined with `real=` or `imag=`. As with real construction,
+`format=` conflicts with word length or precision. Constructors, `from_raw`, and
+`quantize` require a signed base-2 format. `from_raw` takes keyword-only `i`, `q`,
+and `format`; it checks both integer encodings strictly, regardless of policy.
+Numeric booleans are accepted, but raw booleans are rejected.
+
+Separate components accept the same exact real inputs as `Fixb`, including
+`Fraction` and existing real fixed-point scalars. Python complex inputs use the
+exact ratios of their floating components. Construction from another `CFixb`
+reads both raw components directly. Nonfinite components and direct `Decimal`
+inputs are rejected. For a finite Decimal component, use `Fraction(decimal)`.
+Exact construction never passes components through Python complex or float.
+
+`.real` and `.imag` return generic `Fixb` values with the shared format and exact
+raw encodings. Reading them performs no rounding or policy lookup. There is no
+complex `.int`; use `.real.int` and `.imag.int`. `complex(z)` is an explicitly
+approximate conversion and may overflow for huge components. `bool(z)` tests
+whether either raw component is nonzero. `repr(z)` uses an exact
+`CFixb.from_raw(i=..., q=..., format=Format(...))` expression, preserving values
+beyond float precision and remaining independent of the active policy.
+
+Arithmetic accepts `CFixb`, `Fixb`, `Ufixb`, and Python integers (including bool)
+in either operand order. Float, Fraction, Decimal, and Python complex arithmetic
+operands require explicit fixed-point construction. The common `cf.add`,
+`cf.subtract`, `cf.multiply`, and `cf.negative` functions also accept complex
+operands and explicit `math=`; there is no separate complex arithmetic API.
+`+z` and `cf.positive(z)` preserve the value and format without quantization.
+Arithmetic and conversion results are generic `CFixb`, with no attached policy.
+
+| Complex operation | Full result and quantization boundary |
+| --- | --- |
+| Add/subtract | Align declared component/real ranges as in real arithmetic; one shared signed format; apply sum policy |
+| Complex × complex | Exact `ac - bd` and `ad + bc`; component product width plus one guard bit; apply product policy once per completed component |
+| Complex × real | Original component and real product format, with no extra guard bit; apply product policy |
+| Negate/conjugate | Widen the shared format for negating the declared minimum; apply sum policy |
+| `mag2()` | Exact component squares and their sum; signed component product format plus one guard bit; apply sum policy once |
+
+The multiplication distinction follows container types even when a complex
+operand's imaginary value is zero. Mixed unsigned real operands retain their
+original format during inference: signed 8-bit complex components times an
+unsigned 8-bit real operand produce signed 16-bit components. With equal input
+precisions, their sum has a signed 10-bit shared format.
+
+`conjugate(*, math=None)` preserves the exact real component and negates the
+imaginary component before applying sum policy to both. It widens even when the
+current imaginary value is zero. `mag2(*, math=None)` returns a generic real
+scalar and ignores product policy entirely; it never rounds partial squares.
+Full `mag2` remains signed despite being nonnegative. An explicit unsigned sum
+target is valid for `mag2` and returns `Ufixb`; unsigned targets are invalid for
+operations producing complex results. Rounding and overflow apply independently
+to both completed complex components.
+
+Equality is exact and policy-independent with other complex scalars, Python
+complex numbers, and supported real numbers. A zero imaginary part compares and
+hashes like the corresponding exact real value, including Decimal comparisons.
+Nonfinite comparisons follow ordinary Python numeric semantics. Complex hashing
+combines the exact component hashes using Python's complex hash rule, including
+signed-width reduction and remapping -1 to -2, without float conversion.
+
+Complex ordering, absolute value (`abs`/`cf.absolute`), raw shifts, division,
+and square roots are unsupported. Use `mag2()` when squared magnitude is needed.
+
+## Real bit shifts and exact scaling
 
 `x << n` and `x >> n` retain the format and shift the stored integer. Counts must
 be nonnegative, non-boolean integers. Left shift uses the active overflow mode;
@@ -224,6 +307,6 @@ floating-intermediate inaccuracies. Binary equality and hashing now reflect
 numeric values rather than object identity, and binary context setters copy all
 supplied contexts. Decimal behavior is preserved, including unsupported arithmetic.
 
-Complex scalars, arrays, NumPy dispatch, reductions, and reusable-buffer execution
+Arrays, NumPy dispatch, reductions, and reusable-buffer execution
 belong to later changes. Division, other bitwise operators, and transcendental
 functions remain unsupported. There is no public preparation or workspace API.

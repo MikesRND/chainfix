@@ -50,6 +50,10 @@ import chainfix
 assert chainfix.Fixb(0.5).as_integer_ratio() == (1, 2)
 with chainfix.local_binary_context(math=chainfix.Math()):
     assert (chainfix.Fixb(0.5) * 2 + chainfix.Fixb(0.25)).as_integer_ratio() == (5, 4)
+    z = chainfix.CFixb(0.5 + 0.25j)
+    assert z * z.conjugate() == z.mag2() == 0.3125
+    assert chainfix.add(z, chainfix.Ufixb(0.5)) == 1 + 0.25j
+    assert chainfix.multiply(z, 2) == 1 + 0.5j
 assert not any(name == 'numpy' or name.startswith('numpy.') for name in sys.modules)
 """],
         check=True,
