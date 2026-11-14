@@ -123,9 +123,10 @@ complex, lists, tuples, and bare ndarrays. Unsupported arithmetic such as
 operands, including sentinel equality comparisons.
 
 NumPy ufuncs and array functions return `NotImplemented` for foreign operand
-types so their own handlers can participate, in either operand order. Recognized unsupported NumPy scalars and bare ndarrays
-still raise. Some NumPy scalar-left comparison operators first convert themselves
-to a bare zero-dimensional ndarray and are therefore rejected; explicit calls
+types so their own handlers can participate, in either operand order. Recognized
+unsupported NumPy scalars and bare ndarrays still raise. Some NumPy scalar-left
+comparison operators first convert themselves to a bare zero-dimensional ndarray
+and are therefore rejected; explicit calls
 such as `np.equal(np.int64(1), z)` preserve the scalar and are supported.
 
 ## Arithmetic and policy boundaries

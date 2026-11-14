@@ -420,7 +420,9 @@ def test_exhaustive_two_term_dots_for_small_formats(mode, overflow):
              {"accumulator": fmt(5, 4)}, {"product": fmt(5, 0), "sum": fmt(2, 0)},
              {"product": fmt(4, 2), "accumulator": fmt(4, 2), "sum": fmt(4, 3)}]
     assert list(braws) == [0, 1, 2, 3]
-    for a, b in itertools.product(itertools.product(araws, repeat=2), ((0, 3), (1, 2), (3, 1))):
+    # (3, 3) reaches raw sums of -24 and 18, beyond the 5-bit product format,
+    # so the exact path needs the full sum's guard bit.
+    for a, b in itertools.product(itertools.product(araws, repeat=2), ((0, 3), (1, 2), (3, 3))):
         x, y = raw_array(a, af), raw_array(b, bf)
         for spec in specs:
             spec = dict(spec, rounding=mode, overflow=overflow)

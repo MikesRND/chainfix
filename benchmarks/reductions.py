@@ -85,9 +85,14 @@ def main():
     results = {}
     for name, function in workloads(args.frame, args.taps).items():
         function()
-        start = perf_counter_ns()
-        function()
-        number = max(1, int(args.round_ms * 1e6 // max(1, perf_counter_ns() - start)))
+        # Size each round from the faster of two calls, so one slow sample
+        # does not shorten every round.
+        single = []
+        for _ in range(2):
+            start = perf_counter_ns()
+            function()
+            single.append(perf_counter_ns() - start)
+        number = max(1, int(args.round_ms * 1e6 // max(1, min(single))))
         times = []
         for _ in range(args.rounds):
             start = perf_counter_ns()
