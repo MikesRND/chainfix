@@ -195,10 +195,12 @@ class Array:
     def quantize(self, format: Format, *, math: Math | None = None):
         kernels.check_format(format, self.is_complex)
         raw = kernels.convert(self.raw, self.format, format, _selected_math(math))
-        # convert owns its contiguous result; a second copy is only needed to
-        # change storage width, not when the target already uses int64.
-        return Array._from_storage(raw.astype(kernels.storage_dtype(format), copy=False),
-                                   format, self.is_complex)
+        # A value-preserving conversion can return this array's own int64 storage.
+        # The result always owns independent, writable, C-contiguous storage; copy
+        # again only when conversion did not already produce it.
+        copy = True if raw is self.raw or np.may_share_memory(raw, self.raw) else None
+        return Array._from_storage(np.array(raw, dtype=kernels.storage_dtype(format),
+                                            copy=copy, order="C"), format, self.is_complex)
 
     def conjugate(self, *, math: Math | None = None):
         return conjugate(self, math=math)
@@ -530,6 +532,7 @@ def _binary(a, b, operation, out, math):
         if complex:
             i, q, work = (np.empty(shape, dtype=np.int64) for _ in range(3))
             kernels.multiply_complex(ai, aq, bi, bq, i=i, q=q, work=work)
+            del work  # Release product scratch before _finish allocates its output.
         else:
             i, q = np.multiply(ai, bi), None
     else:

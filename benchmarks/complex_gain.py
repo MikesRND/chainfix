@@ -132,8 +132,7 @@ def main():
         for _ in range(args.warmup):
             function()
     np.testing.assert_array_equal(out.raw, expected)
-    identities = tuple(id(buffer) for buffer in gain.workspace.buffers)
-    output_identity = id(out.raw)
+    buffers, output_raw = gain.workspace.buffers, out.raw
 
     timings = {name: [] for name in functions}
     names = list(functions)
@@ -158,8 +157,8 @@ def main():
             retained[name] = retained_numpy_bytes(function)
     finally:
         tracemalloc.stop()
-    assert tuple(id(buffer) for buffer in gain.workspace.buffers) == identities
-    assert id(out.raw) == output_identity
+    assert all(a is b for a, b in zip(buffers, gain.workspace.buffers, strict=True))
+    assert out.raw is output_raw
     np.testing.assert_array_equal(out.raw, expected)
 
     report = {

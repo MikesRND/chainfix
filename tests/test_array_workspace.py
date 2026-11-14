@@ -14,8 +14,10 @@
 
 """Standalone gain, in-place internal conversion and measured scratch reuse."""
 
+import copy
 from fractions import Fraction
 import itertools
+import pickle
 import tracemalloc
 
 import pytest
@@ -26,8 +28,60 @@ import chainfix as cf
 from chainfix import arrays as cfa
 from chainfix import _array_kernels as kernels
 from chainfix._array_workspace import _ComplexMultiplyWorkspace
-from benchmarks.complex_gain import ComplexGain, peak_bytes, representative_gain
 from tests.test_binary_math import MODES, OVERFLOWS, fmt, oracle_raw
+
+
+class ComplexGain:
+    """Test-local fixture: explicit configuration, current binding on every call.
+
+    benchmarks/complex_gain.py keeps its own copy so the suite never imports from
+    outside the test tree and the benchmark needs only Chainfix and NumPy.
+    """
+
+    def __init__(self, shape, input_format, gain_format, output_format, *, gain, math):
+        self.input_format, self.output_format = input_format, output_format
+        self.math = math
+        self.gain = cfa.array(gain, format=gain_format, complex=True, math=cf.Math())
+        if self.gain.shape:
+            raise ValueError("standalone gain requires a scalar coefficient")
+        self.workspace = _ComplexMultiplyWorkspace(
+            shape, input_format, gain_format, output_format, math=math)
+
+    def reference(self, raw):
+        x = cfa.from_raw(raw, format=self.input_format, complex=True)
+        with cf.local_binary_context(math=self.math):
+            return (x * self.gain).quantize(self.output_format)
+
+    def public_out(self, raw, out):
+        x = cfa.from_raw(raw, format=self.input_format, complex=True)
+        return cfa.multiply(x, self.gain, out=out, math=self.math)
+
+    def process(self, raw, out):
+        return self.workspace.execute(raw, self.gain.raw, out)
+
+    def allocating_control(self, raw, out):
+        # The frame-sized temporary is actually used and freed before returning.
+        temporary = raw.copy()
+        return self.process(temporary, out)
+
+
+def representative_gain():
+    q14, q12 = fmt(16, 14), fmt(16, 12)
+    return ComplexGain((4, 4096), q14, q14, q12, gain=0.5-0.25j,
+                       math=cf.Math(product=q14, rounding="nearest_even", overflow="raise"))
+
+
+def peak_bytes(function):
+    """One warmed call's global peak above its own current traced baseline."""
+    baseline = tracemalloc.get_traced_memory()[0]
+    tracemalloc.reset_peak()
+    function()
+    return tracemalloc.get_traced_memory()[1] - baseline
+
+
+def assert_same_buffers(before, after):
+    assert len(before) == len(after)
+    assert all(a is b for a, b in zip(before, after))
 
 
 def gain_oracle(raw, input_format, gain, gain_format, output_format, math):
@@ -60,7 +114,7 @@ def test_reusable_conversion_matches_exact_oracle(mode, overflow, inplace):
     source = fmt(64, 0)
     original = np.array(values, dtype=np.int64)
     scratch = kernels._ConversionScratch(original.shape)
-    identities = tuple(id(getattr(scratch, name)) for name in scratch.__slots__)
+    buffers = (scratch.remainder, scratch.increment, scratch.mask, scratch.predicate)
     for shift, (width, signed) in itertools.product(
             (0, 1, 2, 62, 63, 64, 65, 1000), ((3, True), (63, False), (64, True))):
         target = fmt(width, -shift, signed)
@@ -84,7 +138,8 @@ def test_reusable_conversion_matches_exact_oracle(mode, overflow, inplace):
         target = fmt(64, shift)
         kernels.convert(out, fmt(8, 0), target, policy, out=out, scratch=work)
         assert out.tolist() == [int(v) << shift for v in raw]
-    assert tuple(id(getattr(scratch, name)) for name in scratch.__slots__) == identities
+    assert_same_buffers(buffers, (scratch.remainder, scratch.increment, scratch.mask,
+                                  scratch.predicate))
 
 
 @pytest.mark.parametrize("mode,overflow", list(itertools.product(MODES, OVERFLOWS)))
@@ -102,7 +157,6 @@ def test_gain_paths_match_oracle_with_rebinding_and_configured_math(mode, overfl
         fixture.gain.raw.flags.writeable = False
         out = cfa.from_raw(np.zeros(raw.shape, dtype=np.int64), format=destination, complex=True)
         buffers = fixture.workspace.buffers
-        identities = tuple(id(buffer) for buffer in buffers)
         # This ambient policy would produce different values without the explicit
         # override and the reference's configured local scope.
         with cf.local_binary_context(wordlength=4, precision=0,
@@ -126,7 +180,7 @@ def test_gain_paths_match_oracle_with_rebinding_and_configured_math(mode, overfl
                     np.testing.assert_array_equal(out.raw, expected)
                 np.testing.assert_array_equal(current, saved)
                 assert not current.flags.writeable and not fixture.gain.raw.flags.writeable
-        assert tuple(id(buffer) for buffer in fixture.workspace.buffers) == identities
+        assert_same_buffers(buffers, fixture.workspace.buffers)
 
 
 def test_gain_preserves_double_rounding_and_intermediate_overflow():
@@ -265,12 +319,12 @@ def test_complex_gain_peak_allocation_reuses_workspace_and_detects_control():
     out = cfa.empty((4, 4096), format=fixture.output_format, complex=True).raw
     expected = [gain_oracle(raw, fixture.input_format, fixture.gain.raw, fixture.gain.format,
                             fixture.output_format, fixture.math) for raw in inputs]
-    identities = tuple(id(buffer) for buffer in fixture.workspace.buffers)
-    sizes = tuple(buffer.nbytes for buffer in fixture.workspace.buffers)
-    output_identity = id(out)
+    buffers = fixture.workspace.buffers
+    sizes = tuple(buffer.nbytes for buffer in buffers)
     frame_bytes = inputs[0].nbytes  # Physical int16 I/Q frame: 65,536 bytes.
     tolerance = frame_bytes // 4   # 16,384 bytes, independent of larger scratch.
-    calls = [lambda raw=raw: fixture.process(raw, out) for raw in inputs]
+    results = []
+    calls = [lambda raw=raw: results.append(fixture.process(raw, out)) for raw in inputs]
     controls = [lambda raw=raw: fixture.allocating_control(raw, out) for raw in inputs]
     already_tracing = tracemalloc.is_tracing()
     if not already_tracing:
@@ -291,7 +345,61 @@ def test_complex_gain_peak_allocation_reuses_workspace_and_detects_control():
     finally:
         if not already_tracing:
             tracemalloc.stop()
-    assert id(out) == output_identity
-    assert tuple(id(buffer) for buffer in fixture.workspace.buffers) == identities
+    assert results and all(result is out for result in results)
+    assert_same_buffers(buffers, fixture.workspace.buffers)
     assert tuple(buffer.nbytes for buffer in fixture.workspace.buffers) == sizes
     assert all(not raw.flags.writeable for raw in inputs)
+
+
+def test_workspace_refuses_copy_and_pickle():
+    work = representative_gain().workspace
+    for operation in (copy.copy, copy.deepcopy, pickle.dumps):
+        with pytest.raises(TypeError, match="construct a new instance"):
+            operation(work)
+
+
+def test_one_off_conversion_allocates_only_needed_scratch():
+    source, target = fmt(16, 4), fmt(16, 2)
+    raw = np.arange(-8, 8, dtype=np.int64)
+    for mode, used in (("floor", set()), ("ceil", {"remainder", "increment"}),
+                       ("zero", {"remainder", "increment", "mask"}),
+                       ("nearest_up", {"remainder", "increment", "mask"}),
+                       ("nearest_even", {"remainder", "increment", "mask", "predicate"})):
+        scratch = kernels._ConversionScratch(raw.shape, lazy=True)
+        kernels.convert(raw, source, target, cf.Math(rounding=mode, overflow="wrap"),
+                        scratch=scratch)
+        allocated = {name for name in ("remainder", "increment", "mask", "predicate")
+                     if getattr(scratch, "_" + name) is not None}
+        assert allocated == used, mode
+
+
+def test_zero_shift_conversion_never_modifies_borrowed_input():
+    source = fmt(16, 0)
+    raw = np.array([-300, -1, 0, 1, 300], dtype=np.int64)
+    raw.flags.writeable = False
+    saved = raw.copy()
+    # Value-preserving conversions may return the input itself without copying.
+    assert kernels.convert(raw, source, fmt(16, 0), cf.Math(overflow="raise")) is raw
+    assert kernels.convert(raw, source, fmt(64, 0), cf.Math(overflow="wrap")) is raw
+    for overflow, expected in (("saturate", [-128, -1, 0, 1, 127]),
+                               ("wrap", [-44, -1, 0, 1, 44])):
+        result = kernels.convert(raw, source, fmt(8, 0), cf.Math(overflow=overflow))
+        assert result is not raw and result.tolist() == expected
+    with pytest.raises(cf.FixedPointOverflowError):
+        kernels.convert(raw, source, fmt(8, 0), cf.Math(overflow="raise"))
+    np.testing.assert_array_equal(raw, saved)
+
+
+@pytest.mark.parametrize("operation", ("positive", "conjugate"))
+@pytest.mark.parametrize("complex", (False, True))
+def test_unary_destination_conversion_preserves_borrowed_input(operation, complex):
+    # Wider int64 storage borrows directly through astype(copy=False).
+    source, destination = fmt(32, 4), fmt(16, 1)
+    shape = (5, 2) if complex else (5,)
+    raw = (np.arange(np.prod(shape), dtype=np.int64).reshape(shape) - 5) * 7
+    saved = raw.copy()
+    x = cfa.from_raw(raw, format=source, complex=complex)
+    out = cfa.empty((5,), format=destination, complex=complex)
+    getattr(cfa, operation)(x, out=out, **({} if operation == "positive" else
+                                             {"math": cf.Math(rounding="floor")}))
+    np.testing.assert_array_equal(raw, saved)

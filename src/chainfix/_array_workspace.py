@@ -59,6 +59,12 @@ class _ComplexMultiplyWorkspace:
         # Product scratch is dead before conversion; reuse it for remainders.
         self._conversion = kernels._ConversionScratch(shape, remainder=self._work)
 
+    def __reduce_ex__(self, protocol):
+        # A copy would detach the component views from its own input buffer (deep
+        # copy) or share every scratch buffer (shallow copy). Construct a new
+        # workspace per serial execution context instead.
+        raise TypeError("workspaces cannot be copied or pickled; construct a new instance")
+
     @property
     def buffers(self):
         """Distinct persistent allocations, exposed only for diagnostics/tests."""
