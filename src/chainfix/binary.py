@@ -172,10 +172,10 @@ class _Binary(_FixedPoint):
         return _result(self.int, self.format)
 
     def __neg__(self):
-        return negative(self)
+        return _unary(self, absolute=False, math=None)
 
     def __abs__(self):
-        return absolute(self)
+        return _unary(self, absolute=True, math=None)
 
     def __lshift__(self, count: int):
         _shift_count(count)
@@ -257,29 +257,34 @@ def _binary_operation(a, b, operation: str, math: Math | None = None):
 
 
 def _explicit(a, b, operation: str, math: Math | None):
-    result = _binary_operation(a, b, operation, math)
+    if isinstance(a, CFixb) or isinstance(b, CFixb):
+        result = _complex_operation(a, b, operation, math)
+    else:
+        result = _binary_operation(a, b, operation, math)
     if result is NotImplemented:
         raise TypeError(f"{operation} requires binary fixed-point values or integer constants")
     return result
 
 
-def add(a, b, *, math: Math | None = None) -> Fixb | Ufixb:
+def add(a, b, *, math: Math | None = None) -> Fixb | Ufixb | CFixb:
     """Add exactly, then apply the sum result format."""
     return _explicit(a, b, "add", math)
 
 
-def subtract(a, b, *, math: Math | None = None) -> Fixb | Ufixb:
+def subtract(a, b, *, math: Math | None = None) -> Fixb | Ufixb | CFixb:
     """Subtract exactly, then apply the sum result format."""
     return _explicit(a, b, "subtract", math)
 
 
-def multiply(a, b, *, math: Math | None = None) -> Fixb | Ufixb:
+def multiply(a, b, *, math: Math | None = None) -> Fixb | Ufixb | CFixb:
     """Multiply original stored integers, then apply the product result format."""
     return _explicit(a, b, "multiply", math)
 
 
-def positive(value) -> Fixb | Ufixb:
+def positive(value) -> Fixb | Ufixb | CFixb:
     """Return a generic scalar with unchanged value and format."""
+    if isinstance(value, CFixb):
+        return +value
     value = _operand(value)
     if value is NotImplemented:
         raise TypeError("positive requires a binary fixed-point value or integer")
@@ -297,11 +302,21 @@ def _unary(value, *, absolute: bool, math: Math | None):
     return _result(quantize_raw(raw, full.precision, target, policy), target)
 
 
-def negative(value, *, math: Math | None = None) -> Fixb | Ufixb:
+def negative(value, *, math: Math | None = None) -> Fixb | Ufixb | CFixb:
     """Negate with declared-range growth, then apply the sum result format."""
+    if isinstance(value, CFixb):
+        return _complex_unary(value, conjugate=False, math=math)
     return _unary(value, absolute=False, math=math)
 
 
 def absolute(value, *, math: Math | None = None) -> Fixb | Ufixb:
     """Take the real absolute value, then apply the sum result format."""
+    if isinstance(value, CFixb):
+        raise TypeError("complex absolute value is unsupported; use mag2()")
     return _unary(value, absolute=True, math=math)
+
+
+# Complex scalars depend on the real helpers above. Import after defining them
+# to resolve the cycle once, and bind CFixb for runtime annotation introspection.
+# Only explicit functions dispatch here; real operators use Python reflection.
+from chainfix.complex import CFixb, _complex_operation, _complex_unary

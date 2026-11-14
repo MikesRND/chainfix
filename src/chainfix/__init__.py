@@ -24,6 +24,7 @@ __all__ = [
     'set_decimal_context',
     'Fixb',
     'Ufixb',
+    'CFixb',
     'Fixb32',
     'Ufixb32',
     'BinaryContext',
@@ -45,6 +46,7 @@ __all__ = [
 
 from chainfix.binary import Fixb
 from chainfix.binary import Ufixb
+from chainfix.complex import CFixb
 from chainfix.context import BinaryContext
 from chainfix.context import DecimalContext
 from chainfix.context import get_binary_context

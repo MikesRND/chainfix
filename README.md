@@ -6,9 +6,9 @@
 [![Python Version](https://img.shields.io/badge/python-3.12%2B-blue)](https://github.com/pydefi/chainfix)
 [![License](https://img.shields.io/github/license/pydefi/chainfix)](https://github.com/pydefi/chainfix/blob/main/LICENSE)
 
-Chainfix provides real binary fixed-point arithmetic and decimal fixed-point
-construction and inspection. The scalar package uses Python integers and has no
-NumPy dependency.
+Chainfix provides real and complex binary fixed-point arithmetic and decimal
+fixed-point construction and inspection. The scalar package uses Python integers
+and has no NumPy dependency.
 
 ```python
 import chainfix as cf
@@ -27,7 +27,19 @@ with cf.local_binary_context(math=dsp):
 Values carry their format; arithmetic follows the active scope or an explicit
 `math=` argument. Defaults are nearest-even rounding and raise on overflow.
 See [binary arithmetic](docs/binary-arithmetic.md) for conversion rules, growth,
-scopes, supported operators, and compatibility notes for the planned 0.2.0 release.
+scopes, supported operators, and compatibility notes.
+
+Complex scalars share one signed format for their real and imaginary components:
+
+```python
+z = cf.CFixb(0.5 + 0.25j, format=q14)
+mixed = z * z.conjugate() + a
+power = z.mag2()  # exact squares and sum, then one sum-policy boundary
+assert z.real.int == 8192 and z.imag.int == 4096
+```
+
+See [complex arithmetic](docs/binary-arithmetic.md#complex-scalars) for exact
+component construction, mixed real/complex arithmetic, and growth rules.
 
 Fixed-point data types are used in a wide range of computing applications. 
 Binary-fixed point types are commonly used in the design of specialized hardware, 
@@ -166,7 +178,7 @@ for `Fixd` and `Ufixd` values or
 16
 ```
 
-for `Fixb` and `Ufixb` values.
+for `Fixb`, `Ufixb`, and `CFixb` values.
 
 The context can be modified to change the behavior of newly constructed values:
 
@@ -190,7 +202,7 @@ provide enough range for the value.
 
 # Future Work
 
-* Complex binary scalars, optional NumPy arrays, and reusable-buffer execution
+* Optional NumPy arrays and reusable-buffer execution
 * Reductions with separate product, accumulator, and final-sum policies
 
 Decimal arithmetic and division remain unsupported.
