@@ -12,11 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Policy precedence, complete context copying, and scope isolation."""
+"""Policy precedence, immutable contexts with replace(), and scope isolation."""
 
 import asyncio
 from contextvars import Context
-from copy import copy
+from copy import copy, deepcopy
 from fractions import Fraction
 
 import pytest
@@ -36,41 +36,54 @@ def configured():
         sum=format_at(4), accumulator=format_at(5)))
 
 
-@pytest.mark.parametrize("copier", [lambda ctx: ctx.copy(), copy], ids=["method", "copy.copy"])
-def test_both_copy_paths_preserve_all_math_and_mutable_independence(configured, copier):
-    cloned = copier(configured)
-    assert cloned is not configured
-    assert cloned.math is configured.math
-    assert cloned.math == cf.Math(rounding="nearest_away", overflow="wrap",
-                                 product=format_at(3), sum=format_at(4), accumulator=format_at(5))
-    assert (cloned.wordlength, cloned.precision) == (20, -3)
-    cloned.wordlength = 21
-    cloned.precision = 7
-    cloned.overflow = "saturate"
-    cloned.rounding = "floor"
+def test_replace_preserves_unchanged_settings_and_the_original(configured):
+    resized = configured.replace(wordlength=21, precision=7)
+    assert resized is not configured
+    assert resized.math is configured.math
+    assert (resized.wordlength, resized.precision) == (21, 7)
     assert (configured.wordlength, configured.precision) == (20, -3)
-    assert configured.math.overflow is cf.Overflow.WRAP
-    assert configured.math.rounding is cf.Rounding.NEAREST_AWAY
-    assert cloned.math.product == configured.math.product
-    assert cloned.math.sum == configured.math.sum
-    assert cloned.math.accumulator == configured.math.accumulator
-    assert cloned.math.overflow is cloned.overflow is cf.Overflow.SATURATE
-    cloned.math = cf.Math()
-    assert cloned.overflow is cf.Overflow.RAISE
+    modes = configured.replace(rounding="floor", overflow="saturate")
+    assert modes.math == cf.Math(rounding="floor", overflow="saturate", product=format_at(3),
+                                 sum=format_at(4), accumulator=format_at(5))
+    assert modes.rounding is cf.Rounding.FLOOR
+    assert modes.overflow is cf.Overflow.SATURATE
+    assert configured.rounding is cf.Rounding.NEAREST_AWAY
     assert configured.overflow is cf.Overflow.WRAP
+    stages = configured.replace(product="full", sum=format_at(1), accumulator="full")
+    assert (stages.math.product, stages.math.sum, stages.math.accumulator) == (
+        "full", format_at(1), "full")
+    assert stages.rounding is cf.Rounding.NEAREST_AWAY
+    reset = configured.replace(math=cf.Math())
+    assert reset.overflow is cf.Overflow.RAISE
+    assert reset.wordlength == 20
+    # None means "not specified", as in the constructor and the scopes.
+    assert configured.replace() is configured
+    assert configured.replace(wordlength=None, math=None, rounding=None) is configured
+    assert cf.BinaryContext(math=None) == cf.BinaryContext()
+    with pytest.raises(ValueError):
+        configured.replace(math=cf.Math(), rounding="floor")
+    with pytest.raises(TypeError, match="unknown context setting"):
+        configured.replace(base=10)
+    with pytest.raises(TypeError, match="unknown context setting"):
+        configured.replace(base=None)
+    for kwargs in ({"wordlength": 0}, {"wordlength": True}, {"precision": 1.5},
+                   {"math": "full"}, {"rounding": "invalid"}, {"product": 8}):
+        with pytest.raises((TypeError, ValueError)):
+            configured.replace(**kwargs)
+    assert copy(configured) is configured
+    assert deepcopy(configured) is configured
 
 
-def test_binary_setter_copies_complete_configuration(configured):
+def test_binary_setter_installs_the_given_context(configured):
     def check():
         cf.set_binary_context(configured)
-        installed = cf.get_binary_context()
-        assert installed is not configured
-        assert installed.math is configured.math
-        configured.precision = 10
-        configured.math = cf.Math()
-        assert installed.precision == -3
-        assert installed.overflow is cf.Overflow.WRAP
+        assert cf.get_binary_context() is configured
+        with pytest.raises(AttributeError):
+            configured.precision = 10
         assert cf.Fixb(0).format.precision == -3
+        cf.set_binary_context(configured.replace(precision=10))
+        assert cf.Fixb(0).format.precision == 10
+        assert configured.precision == -3
     Context().run(check)
 
 
@@ -78,7 +91,7 @@ def test_nested_scopes_restore_on_exception_and_setter(configured):
     original = cf.get_binary_context()
     with cf.local_binary_context(configured, wordlength=24, precision=6) as outer:
         assert cf.get_binary_context() is outer
-        assert outer is not configured
+        assert outer == configured.replace(wordlength=24, precision=6)
         assert outer.math is configured.math
         assert cf.Fixb(0).format == cf.Format(base=2, signed=True, wordlength=24, precision=6)
         with pytest.raises(RuntimeError):
@@ -91,8 +104,9 @@ def test_nested_scopes_restore_on_exception_and_setter(configured):
                 raise RuntimeError("restore the entry token")
         assert cf.get_binary_context() is outer
     assert cf.get_binary_context() is original
-    assert configured.wordlength == 20
-    assert configured.precision == -3
+    with cf.local_binary_context(configured) as unchanged:
+        assert unchanged is configured
+    assert (configured.wordlength, configured.precision) == (20, -3)
 
 
 def test_separately_scoped_async_tasks(configured):
@@ -102,9 +116,10 @@ def test_separately_scoped_async_tasks(configured):
             assert cf.get_binary_context() is context
             assert context.precision == precision
             assert context.overflow.value == overflow.value
-            context.wordlength += 1
+            # Rebinding inside one task never reaches its sibling or parent.
+            cf.set_binary_context(context.replace(wordlength=context.wordlength + 1))
             await asyncio.sleep(0)
-            return cf.Fixb(0).format, context.math
+            return cf.Fixb(0).format, cf.get_binary_context().math
     async def run():
         parent = cf.get_binary_context()
         result = await asyncio.gather(worker(3, cf.Overflow.SATURATE), worker(7, cf.Overflow.WRAP))
@@ -112,8 +127,9 @@ def test_separately_scoped_async_tasks(configured):
         return result
     result = Context().run(asyncio.run, run())
     assert [item[0].precision for item in result] == [3, 7]
-    assert configured.wordlength == 20
-    assert configured.precision == -3
+    assert [item[0].wordlength for item in result] == [21, 21]
+    assert [item[1].overflow for item in result] == [cf.Overflow.SATURATE, cf.Overflow.WRAP]
+    assert (configured.wordlength, configured.precision) == (20, -3)
 
 
 def test_explicit_conversion_and_reusable_function_policy():
@@ -165,26 +181,43 @@ def test_context_validation_and_conflicting_overrides(configured):
         with pytest.raises((TypeError, ValueError)):
             with cf.local_binary_context(**kwargs):
                 pass
-    for attr, value in (("wordlength", -1), ("precision", True), ("math", None),
-                        ("rounding", "invalid"), ("overflow", "invalid")):
-        original = configured.copy()
-        with pytest.raises((TypeError, ValueError)):
+    snapshot = (configured.wordlength, configured.precision, configured.math)
+    for attr, value in (("wordlength", 21), ("wordlength", -1), ("precision", True),
+                        ("math", cf.Math()), ("math", None), ("rounding", "floor"),
+                        ("overflow", "wrap"), ("unrelated", 1)):
+        with pytest.raises(AttributeError, match="immutable; use replace"):
             setattr(configured, attr, value)
-        assert configured.math == original.math
-        assert configured.wordlength == original.wordlength
-        assert configured.precision == original.precision
+        assert (configured.wordlength, configured.precision, configured.math) == snapshot
+    for attr in ("wordlength", "precision", "math", "rounding", "overflow"):
+        with pytest.raises(AttributeError, match="immutable; use replace"):
+            delattr(configured, attr)
+    assert (configured.wordlength, configured.precision, configured.math) == snapshot
 
 
-def test_decimal_behavior_and_defaults_are_preserved():
-    assert DefaultDecimalContext.overflow is cf.Overflow.SATURATE
+def test_decimal_contexts_hold_only_construction_sizes():
     assert DefaultBinaryContext.overflow is cf.Overflow.RAISE
-    assert not hasattr(DefaultDecimalContext, "math")
-    decimal = cf.DecimalContext(20, 3, cf.Overflow.WRAP)
-    for cloned in (decimal.copy(), copy(decimal)):
-        assert cloned is not decimal
-        assert (cloned.wordlength, cloned.precision, cloned.overflow) == (20, 3, cf.Overflow.WRAP)
-        cloned.precision = 1
-        assert decimal.precision == 3
+    assert (DefaultDecimalContext.wordlength, DefaultDecimalContext.precision) == (256, 18)
+    assert (cf.BinaryContext.base, cf.DecimalContext.base) == (2, 10)
+    for attr in ("math", "overflow", "rounding"):
+        assert not hasattr(DefaultDecimalContext, attr)
+    decimal = cf.DecimalContext(20, 3)
+    changed = decimal.replace(precision=1)
+    assert (changed.wordlength, changed.precision) == (20, 1)
+    assert decimal.precision == 3
+    # Decimal construction never applied a policy, so decimal contexts take none.
+    with pytest.raises(TypeError):
+        cf.DecimalContext(20, 3, cf.Overflow.WRAP)
+    for name, value in (("overflow", "wrap"), ("rounding", "floor"), ("math", cf.Math()),
+                        ("product", format_at(2))):
+        with pytest.raises(TypeError):
+            cf.DecimalContext(**{name: value})
+        with pytest.raises(TypeError, match="unknown context setting"):
+            decimal.replace(**{name: value})
+        with pytest.raises(TypeError):
+            with cf.local_decimal_context(**{name: value}):
+                pass
+    with pytest.raises(ValueError):
+        cf.DecimalContext(wordlength=0)
     with pytest.raises(TypeError):
         cf.Ufixd(3.1) + cf.Ufixd(3.3)
     with pytest.raises(ValueError) as error:

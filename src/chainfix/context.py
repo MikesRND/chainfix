@@ -1,4 +1,5 @@
 # Copyright 2021 PyDefi Development Team
+# Copyright 2026 PyDefi Development Team
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -11,213 +12,224 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-#
-# Some context code adapted from Python's decimal module
-# Copyright (c) 2004 Python Software Foundation.
 
+"""Immutable fixed-point contexts and their execution-context scoping.
+
+A context holds construction defaults (word length and precision) and, for
+binary values, the arithmetic policy (``Math``). Contexts are final values:
+derive a changed one with ``replace()`` and activate it with
+``set_*_context()`` or ``local_*_context()``. Each ``ContextVar`` binding is
+local to its execution context, so asyncio tasks and copied contexts can share
+a context object safely. There is no process-wide default to reconfigure.
+"""
+
+from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
-from dataclasses import replace
-from typing import Iterator, Optional, Self
+from contextvars import ContextVar
+from dataclasses import replace as _replace_policy
+from types import MappingProxyType
+from typing import ClassVar, Self, final
 
 from chainfix.format import _integer
 from chainfix.policy import Math, Overflow, ResultFormat, Rounding
 
+_POLICY_FIELDS = ("rounding", "overflow", "product", "sum", "accumulator")
+
 
 class _Context:
+    """Behavior shared by the final, immutable context classes.
 
-    def __init__(self,
-                 wordlength: Optional[int] = None,
-                 precision: Optional[int] = None,
-                 overflow: Optional[Overflow] = None):
-        dc = self.get_default()
-        self.precision = precision if precision is not None else dc.precision
-        self.wordlength = wordlength if wordlength is not None else dc.wordlength
-        self.overflow = overflow if overflow is not None else dc.overflow
+    Instances are only built by the ``_create`` classmethod, which always returns
+    a new object; no instance method writes a slot.
+    """
 
-    def copy(self):
-        """Returns a deep copy from self."""
-        nc = self.__class__(self.wordlength, self.precision, self.overflow)
-        return nc
+    __slots__ = ("wordlength", "precision")
+    wordlength: int
+    precision: int
 
-    __copy__ = copy
+    base: ClassVar[int]
+    _fields: ClassVar[tuple[str, ...]] = ("wordlength", "precision")
+    _settings: ClassVar[frozenset[str]] = frozenset(_fields)
+    _defaults: ClassVar[Mapping[str, object]]
 
-    def get_default(self):
-        raise NotImplementedError
+    def __init_subclass__(cls, **kwargs):
+        # replace() and pickling rebuild exactly the declared fields.
+        if cls.__module__ != __name__:
+            raise TypeError(f"{cls.__mro__[1].__name__} is final and cannot be subclassed")
+        super().__init_subclass__(**kwargs)
+
+    @classmethod
+    def _specified(cls, changes: dict) -> dict:
+        """Reject unknown settings and drop None, which means "not specified"."""
+        if not cls._settings.issuperset(changes):
+            unknown = ", ".join(sorted(changes.keys() - cls._settings))
+            raise TypeError(f"unknown context setting(s): {unknown}")
+        return {name: value for name, value in changes.items() if value is not None}
+
+    @classmethod
+    def _fold(cls, current: Mapping[str, object], changes: dict) -> dict:
+        """Translate convenience settings into field values."""
+        return changes
+
+    @classmethod
+    def _build(cls, current: Mapping[str, object], changes: dict) -> Self:
+        return cls._create({**current, **cls._fold(current, changes)})
+
+    @classmethod
+    def _create(cls, settings: Mapping[str, object]) -> Self:
+        """Validate complete field values and return a new context."""
+        if _integer(settings["wordlength"], "wordlength") < 1:
+            raise ValueError("wordlength must be positive")
+        _integer(settings["precision"], "precision")
+        context = object.__new__(cls)
+        for name in cls._fields:
+            object.__setattr__(context, name, settings[name])
+        return context
+
+    def _current(self) -> dict:
+        return {name: getattr(self, name) for name in self._fields}
+
+    def replace(self, **changes) -> Self:
+        """Return a context with the given settings changed.
+
+        Settings left at None are not changed; with no changes, this context is
+        returned. The original context is never modified.
+        """
+        changes = self._specified(changes)
+        if not changes:
+            return self
+        return self._build(self._current(), changes)
+
+    __replace__ = replace  # copy.replace() on Python 3.13+
+
+    def __setattr__(self, name, value):
+        raise AttributeError(f"{type(self).__name__} is immutable; use replace()")
+
+    def __delattr__(self, name):
+        raise AttributeError(f"{type(self).__name__} is immutable; use replace()")
+
+    def _key(self) -> tuple:
+        return tuple(getattr(self, name) for name in self._fields)
+
+    def __eq__(self, other):
+        if type(other) is not type(self):
+            return NotImplemented
+        return self._key() == other._key()
+
+    def __hash__(self) -> int:
+        return hash((type(self), self._key()))
 
     def __repr__(self) -> str:
-        return '{}(wordlength={}, precision={}, overflow={})'.format(
-            self.__class__.__name__,
-            self.wordlength,
-            self.precision,
-            self.overflow)
+        settings = ", ".join(f"{name}={getattr(self, name)!r}" for name in self._fields)
+        return f"{type(self).__name__}({settings})"
+
+    def __reduce__(self):
+        return _restore_context, (type(self), self._current())
+
+    def __copy__(self) -> Self:
+        return self
+
+    def __deepcopy__(self, memo) -> Self:
+        return self
 
 
-class DecimalContext(_Context):
-    base = 10
-
-    def get_default(self):
-        try:
-            dc = DefaultDecimalContext
-        except NameError:
-            dc = None
-
-        return dc
+def _restore_context(cls, settings):
+    # Unpickling validates exactly as construction does.
+    return cls._build(cls._defaults, cls._specified(dict(settings)))
 
 
+@final
 class BinaryContext(_Context):
-    """Mutable binary defaults; use local_binary_context for scoped isolation."""
+    """Binary construction defaults and arithmetic policy (final, immutable)."""
+
+    __slots__ = ("math",)
+    math: Math
 
     base = 2
+    _fields = ("wordlength", "precision", "math")
+    _settings = frozenset((*_fields, *_POLICY_FIELDS))
+    _defaults = MappingProxyType({"wordlength": 32, "precision": 16, "math": Math()})
 
-    def __init__(self, wordlength: int | None = None, precision: int | None = None,
-                 overflow: Overflow | str | None = None, *, math: Math | None = None,
-                 rounding: Rounding | str | None = None,
-                 product: ResultFormat | None = None, sum: ResultFormat | None = None,
-                 accumulator: ResultFormat | None = None):
-        default = self.get_default()
-        self.wordlength = wordlength if wordlength is not None else (default.wordlength if default else 32)
-        self.precision = precision if precision is not None else (default.precision if default else 16)
-        overrides = {name: value for name, value in
-                     (("rounding", rounding), ("overflow", overflow), ("product", product),
-                      ("sum", sum), ("accumulator", accumulator)) if value is not None}
-        if math is not None and overrides:
+    def __new__(cls, wordlength: int | None = None, precision: int | None = None,
+                overflow: Overflow | str | None = None, *, math: Math | None = None,
+                rounding: Rounding | str | None = None,
+                product: ResultFormat | None = None, sum: ResultFormat | None = None,
+                accumulator: ResultFormat | None = None) -> Self:
+        return cls._build(cls._defaults, cls._specified({
+            "wordlength": wordlength, "precision": precision, "math": math,
+            "rounding": rounding, "overflow": overflow, "product": product,
+            "sum": sum, "accumulator": accumulator}))
+
+    @classmethod
+    def _fold(cls, current: Mapping[str, object], changes: dict) -> dict:
+        if changes.keys().isdisjoint(_POLICY_FIELDS):
+            return changes
+        if "math" in changes:
             raise ValueError("math cannot be combined with individual policy overrides")
-        if math is not None:
-            self.math = math
-        else:
-            self.math = replace(default.math if default else Math(), **overrides)
+        overrides = {name: changes.pop(name) for name in _POLICY_FIELDS if name in changes}
+        changes["math"] = _replace_policy(current["math"], **overrides)
+        return changes
 
-    @property
-    def wordlength(self) -> int:
-        return self._wordlength
-
-    @wordlength.setter
-    def wordlength(self, value: int):
-        if _integer(value, "wordlength") < 1:
-            raise ValueError("wordlength must be positive")
-        self._wordlength = value
-
-    @property
-    def precision(self) -> int:
-        return self._precision
-
-    @precision.setter
-    def precision(self, value: int):
-        self._precision = _integer(value, "precision")
-
-    @property
-    def math(self) -> Math:
-        return self._math
-
-    @math.setter
-    def math(self, value: Math):
-        if not isinstance(value, Math):
+    @classmethod
+    def _create(cls, settings: Mapping[str, object]) -> Self:
+        if not isinstance(settings["math"], Math):
             raise TypeError("math must be a Math")
-        self._math = value
+        return super()._create(settings)
 
     @property
     def overflow(self) -> Overflow:
         return self.math.overflow
 
-    @overflow.setter
-    def overflow(self, value: Overflow | str):
-        self.math = replace(self.math, overflow=value)
-
     @property
     def rounding(self) -> Rounding:
         return self.math.rounding
 
-    @rounding.setter
-    def rounding(self, value: Rounding | str):
-        self.math = replace(self.math, rounding=value)
 
-    def copy(self) -> Self:
-        """Copy mutable defaults while sharing the immutable Math configuration."""
-        return type(self)(self.wordlength, self.precision, math=self.math)
+@final
+class DecimalContext(_Context):
+    """Decimal construction defaults: word length and precision (final, immutable)."""
 
-    # The base alias binds _Context.copy; it does not dispatch to this override.
-    __copy__ = copy
+    __slots__ = ()
 
-    def __repr__(self) -> str:
-        return (f"{type(self).__name__}(wordlength={self.wordlength}, "
-                f"precision={self.precision}, math={self.math!r})")
+    base = 10
+    _defaults = MappingProxyType({"wordlength": 256, "precision": 18})
 
-    def get_default(self):
-        try:
-            dc = DefaultBinaryContext
-        except NameError:
-            dc = None
-
-        return dc
+    def __new__(cls, wordlength: int | None = None, precision: int | None = None) -> Self:
+        return cls._build(cls._defaults, cls._specified(
+            {"wordlength": wordlength, "precision": precision}))
 
 
-DefaultDecimalContext = DecimalContext(
-    wordlength=256,
-    precision=18,
-    overflow=Overflow.SATURATE
-)
+DefaultBinaryContext = BinaryContext()
+DefaultDecimalContext = DecimalContext()
 
-DefaultBinaryContext = BinaryContext(
-    wordlength=32,
-    precision=16,
-    overflow=Overflow.RAISE
-)
-
-# Context Functions
-
-# The getcontext() and setcontext() function manage access to a thread-local
-# current context.
-
-import contextvars
-
-_current_decimal_context_var = contextvars.ContextVar('chainfix_decimal')
+# An immutable default can serve as the ContextVar default directly: an empty
+# execution context sees it, and nothing can change it in place.
+_binary_context: ContextVar[BinaryContext] = ContextVar(
+    "chainfix_binary", default=DefaultBinaryContext)
+_decimal_context: ContextVar[DecimalContext] = ContextVar(
+    "chainfix_decimal", default=DefaultDecimalContext)
 
 
-def get_decimal_context():
-    """Returns this thread's decimal context.
-
-    If this thread does not yet have a context, returns
-    a new context and sets this thread's context.
-    New contexts are copies of DefaultDecimalContext.
-    """
-    try:
-        return _current_decimal_context_var.get()
-    except LookupError:
-        context = DecimalContext()
-        _current_decimal_context_var.set(context)
-        return context
+def _checked(context, kind: type[_Context]):
+    if not isinstance(context, kind):
+        raise TypeError(f"context must be a {kind.__name__}")
+    return context
 
 
-def set_decimal_context(context):
-    """Set this thread's context to context."""
-    if context in (DefaultDecimalContext,):
-        context = context.copy()
-    _current_decimal_context_var.set(context)
+def _scoped(variable: ContextVar, kind: type[_Context], context, changes: dict):
+    # Validate before binding so a rejected change leaves the variable untouched.
+    base = variable.get() if context is None else _checked(context, kind)
+    return base.replace(**changes)
 
 
-_current_binary_context_var = contextvars.ContextVar('chainfix_binary')
+def get_binary_context() -> BinaryContext:
+    """Return the binary context active in the current execution context."""
+    return _binary_context.get()
 
 
-def get_binary_context():
-    """Returns this thread's binary context.
-
-    If this thread does not yet have a context, returns
-    a new context and sets this thread's context.
-    New contexts are copies of DefaultBinaryContext.
-    """
-    try:
-        return _current_binary_context_var.get()
-    except LookupError:
-        context = BinaryContext()
-        _current_binary_context_var.set(context)
-        return context
-
-
-def set_binary_context(context):
-    """Validate and copy binary defaults into the current execution context."""
-    if not isinstance(context, BinaryContext):
-        raise TypeError("context must be a BinaryContext")
-    _current_binary_context_var.set(context.copy())
+def set_binary_context(context: BinaryContext) -> None:
+    """Activate a binary context for the rest of the current execution context."""
+    _binary_context.set(_checked(context, BinaryContext))
 
 
 @contextmanager
@@ -227,30 +239,45 @@ def local_binary_context(context: BinaryContext | None = None, *,
                          overflow: Overflow | str | None = None,
                          product: ResultFormat | None = None, sum: ResultFormat | None = None,
                          accumulator: ResultFormat | None = None) -> Iterator[BinaryContext]:
-    """Install a copied context and restore the previous one even on failure."""
-    if context is None:
-        context = get_binary_context()
-    if not isinstance(context, BinaryContext):
-        raise TypeError("context must be a BinaryContext")
-    scoped = context.copy()
-    overrides = {name: value for name, value in
-                 (("rounding", rounding), ("overflow", overflow), ("product", product),
-                  ("sum", sum), ("accumulator", accumulator)) if value is not None}
-    if math is not None and overrides:
-        raise ValueError("math cannot be combined with individual policy overrides")
-    if math is not None:
-        scoped.math = math
-    elif overrides:
-        scoped.math = replace(scoped.math, **overrides)
-    if wordlength is not None:
-        scoped.wordlength = wordlength
-    if precision is not None:
-        scoped.precision = precision
-    token = _current_binary_context_var.set(scoped)
+    """Activate a binary context, optionally changed, until the block exits.
+
+    The supplied context (or the active one) is unchanged; the previous binding
+    is restored even when the block raises. Also usable as a decorator.
+    """
+    scoped = _scoped(_binary_context, BinaryContext, context, {
+        "wordlength": wordlength, "precision": precision, "math": math,
+        "rounding": rounding, "overflow": overflow, "product": product,
+        "sum": sum, "accumulator": accumulator})
+    token = _binary_context.set(scoped)
     try:
         yield scoped
     finally:
-        _current_binary_context_var.reset(token)
+        _binary_context.reset(token)
 
 
-del contextvars  # Don't contaminate the namespace
+def get_decimal_context() -> DecimalContext:
+    """Return the decimal context active in the current execution context."""
+    return _decimal_context.get()
+
+
+def set_decimal_context(context: DecimalContext) -> None:
+    """Activate a decimal context for the rest of the current execution context."""
+    _decimal_context.set(_checked(context, DecimalContext))
+
+
+@contextmanager
+def local_decimal_context(context: DecimalContext | None = None, *,
+                          wordlength: int | None = None,
+                          precision: int | None = None) -> Iterator[DecimalContext]:
+    """Activate a decimal context, optionally changed, until the block exits.
+
+    The supplied context (or the active one) is unchanged; the previous binding
+    is restored even when the block raises. Also usable as a decorator.
+    """
+    scoped = _scoped(_decimal_context, DecimalContext, context,
+                     {"wordlength": wordlength, "precision": precision})
+    token = _decimal_context.set(scoped)
+    try:
+        yield scoped
+    finally:
+        _decimal_context.reset(token)

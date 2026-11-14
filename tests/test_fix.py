@@ -12,13 +12,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from contextvars import Context
+
 import pytest
 
 from chainfix import Fixb
 from chainfix import Fixb32
 from chainfix import Fixd
 from chainfix import Fixd32
-from chainfix import get_decimal_context, set_decimal_context
+from chainfix import get_decimal_context, local_decimal_context, set_decimal_context
 from chainfix import Ufixb
 from chainfix import Ufixb32
 from chainfix import Ufixd
@@ -84,32 +86,24 @@ def test_ranges():
     assert u.min_int == 0
 
 
-def test_get_context1():
-    ctx = get_decimal_context()
-    ctx_save = ctx.copy()
+def test_local_decimal_context_sets_construction_defaults():
+    with local_decimal_context(wordlength=18, precision=8):
+        x = Fixd(0)
+        assert x.wordlength == 18
+        assert x.precision == 8
 
-    ctx.wordlength = 18
-    ctx.precision = 8
-
-    x = Fixd(0)
-    assert x.wordlength == 18
-    assert x.precision == 8
-
-    set_decimal_context(ctx_save)
+    assert (Fixd(0).wordlength, Fixd(0).precision) == (256, 18)
 
 
-def test_get_context2():
-    ctx = get_decimal_context()
-    ctx_save = ctx.copy()
+def test_set_decimal_context_installs_a_replacement():
+    def check():
+        set_decimal_context(get_decimal_context().replace(wordlength=33, precision=7))
+        x = Fixd(0)
+        assert x.wordlength == 33
+        assert x.precision == 7
 
-    ctx.wordlength = 33
-    ctx.precision = 7
-
-    x = Fixd(0)
-    assert x.wordlength == 33
-    assert x.precision == 7
-
-    set_decimal_context(ctx_save)
+    Context().run(check)
+    assert (Fixd(0).wordlength, Fixd(0).precision) == (256, 18)
 
 
 def test_fix():
