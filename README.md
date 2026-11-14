@@ -158,9 +158,12 @@ When `Fixb` is used to store a negative number, the MSB of the stored integer is
 
 # Contexts
 
-Chainfix provides a fixed-point `context` to control the default behavior for new fixed-point objects.
+A context supplies the default `wordlength` and `precision` for new values and the
+arithmetic policy (`math`) for binary operations. Contexts are immutable: derive a
+changed one with `replace()` and activate it for a block or for the rest of the
+current execution context.
 
-The current context can be retrieved using
+The active context can be retrieved using
 
 ```python
 >>> ctx = get_decimal_context()
@@ -182,25 +185,45 @@ for `Fixd` and `Ufixd` values or
 
 for `Fixb`, `Ufixb`, and `CFixb` values.
 
-The context can be modified to change the behavior of newly constructed values:
+Scope a changed context to a block; the previous context is restored on exit, even
+when the block raises:
 
 ```python
->>> get_decimal_context().wordlength = 20
->>> get_decimal_context().precision = 5
+>>> with local_decimal_context(wordlength=20, precision=5):
+...     Fixd(pi)
+Fixd(3.14159, 20, 5)
+```
+
+Or install one for the rest of the current execution context:
+
+```python
+>>> set_decimal_context(get_decimal_context().replace(wordlength=20, precision=5))
 >>> Fixd(pi)
 Fixd(3.14159, 20, 5)
 ```
+
+`local_binary_context`, `set_binary_context`, and `BinaryContext.replace()` work
+the same way and also accept policy settings such as `rounding="floor"` or
+`math=Math(...)`. Assigning to a context attribute raises `AttributeError`.
 
 When passed through the constructor, the values for `wordlength` and `precision` always take precedence over the
 context.
 
 ```python
->>> Fixd(pi, precision=10)
-Fixd(3.1415926536, 256, 10)
+>>> with local_decimal_context(wordlength=20, precision=5):
+...     Fixd(pi, precision=3)
+Fixd(3.142, 20, 3)
 ```
 
-The explicit precision overrides the current context; its word length must still
+The explicit precision overrides the active context; its word length must still
 provide enough range for the value.
+
+Each asyncio task and each copied `contextvars` context has its own binding, so
+installing a context in one never changes another. An empty execution context
+uses the library defaults. Whether a new thread starts with an empty or an
+inherited context depends on the Python version and build; to run work in a
+thread with the caller's context on any version, submit it as
+`executor.submit(contextvars.copy_context().run, fn)`.
 
 Decimal arithmetic and division remain unsupported.
 

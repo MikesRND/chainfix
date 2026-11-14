@@ -284,25 +284,42 @@ rounding mode. Product and sum result formats do not affect shifts.
 `x.scale_pow2(n)` preserves the raw integer and word length, changing precision by
 `-n`. Its exponent accepts either sign and no quantization is performed.
 
-## Context copying and isolation
+## Contexts and scoping
 
 `BinaryContext(wordlength, precision, overflow)` remains supported. Its keyword
 arguments also accept `math`, or individual `rounding`, `overflow`, `product`,
 `sum`, and `accumulator` settings. Combining `math` with individual policy settings
-is an error. Context `wordlength`, `precision`, `math`, `rounding`, and `overflow`
-are mutable and validated; the mode properties update the immutable `Math` value.
-Change other policy fields with `dataclasses.replace(ctx.math, ...)`.
+is an error.
 
-`set_binary_context(ctx)` validates and installs a copy. Both `ctx.copy()` and
-`copy.copy(ctx)` preserve all five policy fields and return independent mutable
-contexts. Sharing the immutable `Math` descriptor is safe.
+Contexts are immutable values. Assigning or deleting `wordlength`, `precision`,
+`math`, `rounding`, `overflow`, or any other attribute raises `AttributeError`.
+`ctx.replace(**changes)` returns a validated context with the given settings
+changed and accepts the same settings as the constructor; unchanged settings,
+including the `Math` value, are shared. Contexts compare and hash by type and
+settings, pickle through validation, and `copy.copy`/`copy.deepcopy` return the
+same object. On Python 3.13+ `copy.replace(ctx, ...)` also works.
 
-`local_binary_context(ctx=None, **overrides)` copies the supplied or active context,
-applies validated overrides, yields the scoped context, and restores the previous
-`ContextVar` token even when the body raises. Nested scopes and separately scoped
-async tasks are supported. Merely copying an execution context does not deep-copy
-its mutable objects: tasks that inherit a context and mutate it without opening
-their own scope can still share that context.
+`set_binary_context(ctx)` validates the type and installs `ctx` itself for the rest
+of the current execution context. `local_binary_context(ctx=None, **overrides)`
+applies validated overrides to the supplied or active context, binds the result for
+the block, and restores the previous binding even when the body raises. A rejected
+override leaves the active context unchanged. Nested scopes are supported.
+
+Bindings live in a `ContextVar`. Each asyncio task and each copied `contextvars`
+context has its own binding, and since the bound object cannot change, sharing it
+is safe: installing a context in a task never affects its parent or siblings. An
+empty execution context uses `DefaultBinaryContext`, which is frozen. Whether a new
+thread starts with an empty or an inherited context depends on the Python version
+and build: before 3.14 new threads start empty; from 3.14 it depends on the
+`Thread(context=...)` argument and `sys.flags.thread_inherit_context`, which is on
+by default in free-threaded builds. On any version,
+`executor.submit(contextvars.copy_context().run, fn)` runs `fn` with the caller's
+context. Explicit `math=` arguments never consult a context at all.
+
+`DecimalContext`, `get_decimal_context`, `set_decimal_context`, and
+`local_decimal_context` follow the same rules. Decimal contexts accept only `"full"`
+result boundaries because decimal arithmetic is unsupported, and decimal
+construction does not apply their `math` yet.
 
 ## Compatibility and deferred work
 
@@ -310,8 +327,9 @@ The binary context's advertised default changes from saturation to raising, in
 line with the constructor's previous overflow behavior. Explicit binary modes now
 affect construction and conversion consistently. Exact conversion corrects
 floating-intermediate inaccuracies. Binary equality and hashing now reflect
-numeric values rather than object identity, and binary context setters copy all
-supplied contexts. Decimal behavior is preserved, including unsupported arithmetic.
+numeric values rather than object identity. Contexts are immutable, so the setters
+install the supplied context instead of copying it. Decimal construction behavior is
+preserved, including unsupported arithmetic.
 
 [Arrays and the supported NumPy dispatch subset](arrays.md) are available through
 the optional arrays extra, including ordered sum, dot, and matrix-product
