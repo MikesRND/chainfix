@@ -10,12 +10,22 @@ on:
 
 jobs:
   tests:
-    name: "Python ${{ matrix.python-version }}"
+    name: "${{ matrix.tox-env }}"
     runs-on: "ubuntu-latest"
 
     strategy:
+      fail-fast: false
       matrix:
-        python-version: ["3.8", "3.9", "3.10", "3.11", "3.12", "3.13"]
+        include:
+          - python-version: "3.12"
+            tox-env: py312-min
+            coverage-flag: min
+          - python-version: "3.15"
+            tox-env: py315-latest
+            coverage-flag: latest
+          - python-version: "3.12"
+            tox-env: py312-nonumpy
+            coverage-flag: nonumpy
 
     steps:
       - uses: "actions/checkout@v4"
@@ -25,17 +35,16 @@ jobs:
       - name: "Install dependencies"
         run: |
           python -m pip install --upgrade pip
-          python -m pip install --upgrade tox tox-gh-actions          
+          python -m pip install --upgrade tox
 
-      - name: "Run tox targets for ${{ matrix.python-version }}"
-        run: "tox"
+      - name: "Run ${{ matrix.tox-env }}"
+        run: "tox -e ${{ matrix.tox-env }}"
 
       - name: "Upload coverage to Codecov"
-        if: matrix.python-version == '3.12'
         uses: codecov/codecov-action@v5
         with:
-          file: ./coverage.xml
-          flags: unittests
-          name: codecov-umbrella
+          files: ./coverage.xml
+          flags: ${{ matrix.coverage-flag }}
+          name: ${{ matrix.tox-env }}
           fail_ci_if_error: false
           token: ${{ secrets.CODECOV_TOKEN }}
