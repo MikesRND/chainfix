@@ -21,6 +21,8 @@ from pathlib import Path
 import subprocess
 import sys
 
+import pytest
+
 import chainfix
 
 
@@ -33,12 +35,14 @@ def test_distribution_metadata():
     assert not metadata.get_all("Requires-Dist")
 
 
-def test_core_import_is_numpy_independent():
+@pytest.mark.parametrize("entry", ("chainfix", "chainfix.binary", "chainfix.complex"))
+def test_core_import_is_numpy_independent(entry):
     # A fresh isolated interpreter catches transitive imports as well as direct ones.
     subprocess.run(
         [sys.executable, "-I", "-c", """
 import importlib.abc
 import sys
+from typing import get_args, get_type_hints
 
 class RejectNumpy(importlib.abc.MetaPathFinder):
     def find_spec(self, fullname, path=None, target=None):
@@ -46,7 +50,13 @@ class RejectNumpy(importlib.abc.MetaPathFinder):
             raise AssertionError('Core import must not load NumPy')
 
 sys.meta_path.insert(0, RejectNumpy())
+importlib.import_module(sys.argv[1])
 import chainfix
+from chainfix import binary
+assert binary.CFixb is chainfix.CFixb
+for name in ('add', 'subtract', 'multiply', 'positive', 'negative'):
+    hints = get_type_hints(getattr(chainfix, name))
+    assert chainfix.CFixb in get_args(hints['return'])
 assert chainfix.Fixb(0.5).as_integer_ratio() == (1, 2)
 with chainfix.local_binary_context(math=chainfix.Math()):
     assert (chainfix.Fixb(0.5) * 2 + chainfix.Fixb(0.25)).as_integer_ratio() == (5, 4)
@@ -55,7 +65,7 @@ with chainfix.local_binary_context(math=chainfix.Math()):
     assert chainfix.add(z, chainfix.Ufixb(0.5)) == 1 + 0.25j
     assert chainfix.multiply(z, 2) == 1 + 0.5j
 assert not any(name == 'numpy' or name.startswith('numpy.') for name in sys.modules)
-"""],
+""", entry],
         check=True,
     )
 

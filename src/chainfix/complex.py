@@ -24,7 +24,7 @@ from typing import Self
 
 from chainfix._exact import convert_ratio, overflow_raw, quantize_raw, scaled_ratio, value_ratio
 from chainfix.binary import (
-    Fixb, Ufixb, _Binary, _binary_operation, _operand, _result, _selected_math, negative,
+    Fixb, Ufixb, _Binary, _operand, _result, _selected_math,
 )
 from chainfix.context import get_binary_context
 from chainfix.format import Format, _binary_format, _integer, _product_format, _sum_format, _unary_format
@@ -49,6 +49,25 @@ class CFixb:
     """
 
     __slots__ = ("_i", "_q", "_format")
+
+    def __setattr__(self, name, value):
+        if name in ("_i", "_q", "_format"):
+            raise AttributeError("CFixb storage is read-only")
+        object.__setattr__(self, name, value)
+
+    def __delattr__(self, name):
+        if name in ("_i", "_q", "_format"):
+            raise AttributeError("CFixb storage is read-only")
+        object.__delattr__(self, name)
+
+    def __reduce_ex__(self, protocol):
+        # Restore exact storage through from_raw, independently of ambient math.
+        # Preserve any additional dictionary/slot state belonging to subclasses.
+        dictionary, slots = object.__getstate__(self)
+        for name in ("_i", "_q", "_format"):
+            del slots[name]
+        return (_restore_complex, (type(self), self._i, self._q, self.format),
+                (dictionary, slots))
 
     def __new__(cls, value=_OMITTED, wordlength: int | None = None,
                 precision: int | None = None, *, real=_OMITTED, imag=_OMITTED,
@@ -82,7 +101,9 @@ class CFixb:
     def _from_raw(cls, i: int, q: int, format: Format) -> Self:
         # Internal only: the caller has validated both components and the format.
         self = object.__new__(cls)
-        self._i, self._q, self._format = i, q, format
+        object.__setattr__(self, "_i", i)
+        object.__setattr__(self, "_q", q)
+        object.__setattr__(self, "_format", format)
         return self
 
     @classmethod
@@ -146,31 +167,35 @@ class CFixb:
         return -2 if signed == -1 else signed
 
     def __add__(self, other):
-        return _binary_operation(self, other, "add")
+        return _complex_operation(self, other, "add")
 
     def __radd__(self, other):
-        return _binary_operation(other, self, "add")
+        return _complex_operation(other, self, "add")
 
     def __sub__(self, other):
-        return _binary_operation(self, other, "subtract")
+        return _complex_operation(self, other, "subtract")
 
     def __rsub__(self, other):
-        return _binary_operation(other, self, "subtract")
+        return _complex_operation(other, self, "subtract")
 
     def __mul__(self, other):
-        return _binary_operation(self, other, "multiply")
+        return _complex_operation(self, other, "multiply")
 
     def __rmul__(self, other):
-        return _binary_operation(other, self, "multiply")
+        return _complex_operation(other, self, "multiply")
 
     def __pos__(self):
         return CFixb._from_raw(self._i, self._q, self.format)
 
     def __neg__(self):
-        return negative(self)
+        return _complex_unary(self, conjugate=False, math=None)
 
     def __abs__(self):
         raise TypeError("complex absolute value is unsupported; use mag2()")
+
+
+def _restore_complex(cls, i: int, q: int, format: Format):
+    return cls.from_raw(i=i, q=q, format=format)
 
 
 def _complex_result(i: int, q: int, precision: int, target: Format, policy: Math) -> CFixb:
@@ -187,7 +212,7 @@ def _complex_unary(value: CFixb, *, conjugate: bool, math: Math | None) -> CFixb
     return _complex_result(i, -value._q, full.precision, target, policy)
 
 
-def _complex_operation(a, b, operation: str, math: Math | None):
+def _complex_operation(a, b, operation: str, math: Math | None = None):
     a = a if isinstance(a, CFixb) else _operand(a)
     b = b if isinstance(b, CFixb) else _operand(b)
     if a is NotImplemented or b is NotImplemented:

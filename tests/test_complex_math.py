@@ -14,19 +14,26 @@
 
 """Complex scalars checked against independent exact rational calculations."""
 
+from copy import copy, deepcopy
 from decimal import Decimal
 from fractions import Fraction
 import itertools
 import math
 import operator
+import pickle
 import random
 import sys
+from typing import get_args, get_type_hints
 
 import pytest
 
 import chainfix as cf
 from chainfix.format import _product_format, _sum_format
 from tests.test_binary_math import MODES, OVERFLOWS, exact, fmt, number, oracle_raw
+
+
+class TaggedComplex(cf.CFixb):
+    __slots__ = ("tag", "__dict__")
 
 
 def pair(value):
@@ -465,3 +472,91 @@ def test_truthiness_repr_and_generic_results_without_context_lookup(monkeypatch)
     assert repr(z) == expected
     restored = eval(repr(z), {"CFixb": cf.CFixb, "Format": cf.Format})
     assert restored == z and restored.format == z.format
+
+
+@pytest.mark.parametrize("name", ("add", "subtract", "multiply", "positive", "negative"))
+def test_public_runtime_return_annotations(name):
+    hints = get_type_hints(getattr(cf, name))
+    assert set(get_args(hints["return"])) == {cf.Fixb, cf.Ufixb, cf.CFixb}
+
+
+@pytest.mark.parametrize("real_type", (cf.Fixb, cf.Ufixb))
+@pytest.mark.parametrize("operation,op", [("add", operator.add), ("subtract", operator.sub),
+                                        ("multiply", operator.mul)])
+def test_reflected_mixed_operators_and_explicit_policy(real_type, operation, op):
+    real = real_type(Fraction(3, 4), 8, 2)
+    z = cf.CFixb(real=Fraction(5, 8), imag=Fraction(-3, 8), format=fmt(8, 3))
+    target = fmt(5, 1)
+    explicit = cf.Math(rounding="nearest_away", product=target, sum=target)
+    ambient = cf.Math(rounding="floor", product=fmt(4, 0), sum=fmt(4, 0))
+    method = {"add": "__add__", "subtract": "__sub__", "multiply": "__mul__"}[operation]
+    # The real method leaves complex operands to Python's reflected dispatch.
+    assert getattr(real, method)(z) is NotImplemented
+    with cf.local_binary_context(math=ambient):
+        for a, b in ((real, z), (z, real)):
+            expected = calculate(a, b, operation)
+            assert_complex(lambda: op(a, b), expected, fmt(4, 0), "floor")
+            assert_complex(lambda: getattr(cf, operation)(a, b, math=explicit),
+                           expected, target, "nearest_away")
+            assert_complex(lambda: getattr(cf, operation)(a, b, math=cf.Math()),
+                           expected, full_format(a, b, operation))
+    with pytest.raises(TypeError):
+        op(real, object())
+    with pytest.raises(TypeError):
+        getattr(cf, operation)(real, object())
+
+
+@pytest.mark.parametrize("construct", [lambda: cf.CFixb(0.5 + 0.25j),
+                                      lambda: cf.CFixb(real=Fraction(1, 2), imag=Fraction(1, 4)),
+                                      lambda: cf.CFixb.from_raw(i=2, q=1, format=fmt(4, 2))])
+def test_complex_storage_cannot_change_a_dictionary_key(construct):
+    z = construct()
+    original = (z.real.int, z.imag.int, z.format, hash(z))
+    lookup, members = {z: "found"}, {z}
+    for name in ("_i", "_q", "_format", "real", "imag", "format"):
+        with pytest.raises(AttributeError):
+            setattr(z, name, fmt(4, 0) if "format" in name else 5)
+        with pytest.raises(AttributeError):
+            delattr(z, name)
+        assert (z.real.int, z.imag.int, z.format, hash(z)) == original
+        assert lookup[+z] == "found" and +z in members
+    assert not hasattr(z, "__dict__")
+    # Real components are independent values, not mutable access to complex storage.
+    component = z.real
+    component._int = 0
+    assert z.real == Fraction(1, 2)
+
+
+@pytest.mark.parametrize("cls", (cf.CFixb, TaggedComplex))
+def test_copy_and_pickle_preserve_exact_storage_without_context(cls, monkeypatch):
+    z = cls.from_raw(i=2 ** 100 + 1, q=-2 ** 100 + 3, format=fmt(104, -3))
+    if cls is TaggedComplex:
+        z.tag, z.metadata = ["slot"], ["dictionary"]
+        z.temporary = True
+        del z.temporary
+        for name in ("_i", "_q", "_format"):
+            with pytest.raises(AttributeError):
+                setattr(z, name, 0)
+            with pytest.raises(AttributeError):
+                delattr(z, name)
+
+    def reject_context():
+        raise AssertionError("copying raw storage must not consult arithmetic policy")
+
+    monkeypatch.setattr("chainfix.complex.get_binary_context", reject_context)
+    monkeypatch.setattr("chainfix.binary.get_binary_context", reject_context)
+    shallow, deep = copy(z), deepcopy(z)
+    results = [shallow, deep] + [pickle.loads(pickle.dumps(z, protocol))
+                                 for protocol in range(pickle.HIGHEST_PROTOCOL + 1)]
+    for restored in results:
+        assert type(restored) is cls
+        assert restored == z and hash(restored) == hash(z)
+        assert restored.format == z.format
+        assert (restored.real.int, restored.imag.int) == (z.real.int, z.imag.int)
+        with pytest.raises(AttributeError):
+            restored._i = 0
+        if cls is TaggedComplex:
+            assert restored.tag == z.tag and restored.metadata == z.metadata
+    if cls is TaggedComplex:
+        assert shallow.tag is z.tag and shallow.metadata is z.metadata
+        assert deep.tag is not z.tag and deep.metadata is not z.metadata

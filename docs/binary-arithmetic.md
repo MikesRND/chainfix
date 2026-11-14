@@ -235,6 +235,11 @@ operands and explicit `math=`; there is no separate complex arithmetic API.
 `+z` and `cf.positive(z)` preserve the value and format without quantization.
 Arithmetic and conversion results are generic `CFixb`, with no attached policy.
 
+Complex storage is read-only: assignment or deletion of its raw components or
+format raises `AttributeError`, preserving equality and hashes in dictionaries
+and sets. Shallow/deep copies and pickle round trips preserve the exact components
+and format independently of the active arithmetic policy.
+
 | Complex operation | Full result and quantization boundary |
 | --- | --- |
 | Add/subtract | Align declared component/real ranges as in real arithmetic; one shared signed format; apply sum policy |
@@ -268,12 +273,12 @@ signed-width reduction and remapping -1 to -2, without float conversion.
 Complex ordering, absolute value (`abs`/`cf.absolute`), raw shifts, division,
 and square roots are unsupported. Use `mag2()` when squared magnitude is needed.
 
-## Real bit shifts and exact scaling
+## Bit shifts and exact scaling
 
-`x << n` and `x >> n` retain the format and shift the stored integer. Counts must
-be nonnegative, non-boolean integers. Left shift uses the active overflow mode;
-right shift is arithmetic and discards bits, regardless of rounding mode. Product
-and sum result formats do not affect shifts.
+For real scalars, `x << n` and `x >> n` retain the format and shift the stored
+integer. Counts must be nonnegative, non-boolean integers. Left shift uses the
+active overflow mode; right shift is arithmetic and discards bits, regardless of
+rounding mode. Product and sum result formats do not affect shifts.
 
 `x.scale_pow2(n)` preserves the raw integer and word length, changing precision by
 `-n`. Its exponent accepts either sign and no quantization is performed.

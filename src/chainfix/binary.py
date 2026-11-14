@@ -21,7 +21,7 @@ from dataclasses import replace
 from decimal import Decimal
 from fractions import Fraction
 import operator
-from typing import Self, TYPE_CHECKING
+from typing import Self
 
 from chainfix._exact import overflow_raw, quantize_raw, scaled_ratio, convert_ratio, value_ratio
 from chainfix.context import get_binary_context
@@ -31,9 +31,6 @@ from chainfix.format import (
     _unary_format,
 )
 from chainfix.policy import FixedPointOverflowError, Math, Overflow
-
-if TYPE_CHECKING:
-    from chainfix.complex import CFixb
 
 __all__ = ["Fixb", "Ufixb", "add", "subtract", "multiply", "positive", "negative", "absolute"]
 
@@ -175,10 +172,10 @@ class _Binary(_FixedPoint):
         return _result(self.int, self.format)
 
     def __neg__(self):
-        return negative(self)
+        return _unary(self, absolute=False, math=None)
 
     def __abs__(self):
-        return absolute(self)
+        return _unary(self, absolute=True, math=None)
 
     def __lshift__(self, count: int):
         _shift_count(count)
@@ -241,11 +238,6 @@ def _operand(value):
 
 
 def _binary_operation(a, b, operation: str, math: Math | None = None):
-    # Import at dispatch time: complex scalars reuse this module's real engine.
-    from chainfix.complex import CFixb, _complex_operation
-
-    if isinstance(a, CFixb) or isinstance(b, CFixb):
-        return _complex_operation(a, b, operation, math)
     a, b = _operand(a), _operand(b)
     if a is NotImplemented or b is NotImplemented:
         return NotImplemented
@@ -265,7 +257,10 @@ def _binary_operation(a, b, operation: str, math: Math | None = None):
 
 
 def _explicit(a, b, operation: str, math: Math | None):
-    result = _binary_operation(a, b, operation, math)
+    if isinstance(a, CFixb) or isinstance(b, CFixb):
+        result = _complex_operation(a, b, operation, math)
+    else:
+        result = _binary_operation(a, b, operation, math)
     if result is NotImplemented:
         raise TypeError(f"{operation} requires binary fixed-point values or integer constants")
     return result
@@ -288,8 +283,6 @@ def multiply(a, b, *, math: Math | None = None) -> Fixb | Ufixb | CFixb:
 
 def positive(value) -> Fixb | Ufixb | CFixb:
     """Return a generic scalar with unchanged value and format."""
-    from chainfix.complex import CFixb
-
     if isinstance(value, CFixb):
         return +value
     value = _operand(value)
@@ -299,12 +292,6 @@ def positive(value) -> Fixb | Ufixb | CFixb:
 
 
 def _unary(value, *, absolute: bool, math: Math | None):
-    from chainfix.complex import CFixb, _complex_unary
-
-    if isinstance(value, CFixb):
-        if absolute:
-            raise TypeError("complex absolute value is unsupported; use mag2()")
-        return _complex_unary(value, conjugate=False, math=math)
     value = _operand(value)
     if value is NotImplemented:
         raise TypeError("unary arithmetic requires a binary fixed-point value or integer")
@@ -317,9 +304,19 @@ def _unary(value, *, absolute: bool, math: Math | None):
 
 def negative(value, *, math: Math | None = None) -> Fixb | Ufixb | CFixb:
     """Negate with declared-range growth, then apply the sum result format."""
+    if isinstance(value, CFixb):
+        return _complex_unary(value, conjugate=False, math=math)
     return _unary(value, absolute=False, math=math)
 
 
 def absolute(value, *, math: Math | None = None) -> Fixb | Ufixb:
     """Take the real absolute value, then apply the sum result format."""
+    if isinstance(value, CFixb):
+        raise TypeError("complex absolute value is unsupported; use mag2()")
     return _unary(value, absolute=True, math=math)
+
+
+# Complex scalars depend on the real helpers above. Import after defining them
+# to resolve the cycle once, and bind CFixb for runtime annotation introspection.
+# Only explicit functions dispatch here; real operators use Python reflection.
+from chainfix.complex import CFixb, _complex_operation, _complex_unary
