@@ -25,6 +25,9 @@ classifiers = [
 ]
 keywords = ["fixed-point", "binary fixed-point", "decimal fixed-point"]
 
+[project.optional-dependencies]
+arrays = ["numpy>=2.5"]
+
 [project.urls]
 Homepage = "https://github.com/pydefi/chainfix"
 Repository = "https://github.com/pydefi/chainfix"

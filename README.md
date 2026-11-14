@@ -8,7 +8,8 @@
 
 Chainfix provides real and complex binary fixed-point arithmetic and decimal
 fixed-point construction and inspection. The scalar package uses Python integers
-and has no NumPy dependency.
+and has no NumPy dependency. The optional [array interface](docs/arrays.md) adds
+NumPy storage, checked integer arithmetic, and reusable output destinations.
 
 ```python
 import chainfix as cf
@@ -202,7 +203,7 @@ provide enough range for the value.
 
 # Future Work
 
-* Optional NumPy arrays and reusable-buffer execution
+* Internal scratch-buffer reuse for complex array workloads
 * Reductions with separate product, accumulator, and final-sum policies
 
 Decimal arithmetic and division remain unsupported.
@@ -215,6 +216,11 @@ policy.
 ## Package Installation
 
 Python 3.12 or newer is required. The scalar package has no runtime dependencies.
+The optional [array interface](docs/arrays.md) requires NumPy >=2.5:
+
+```bash
+pip install 'chainfix[arrays]'
+```
 
 ```bash
 # Create virtual environment (recommended)
@@ -251,7 +257,9 @@ tox -e py312-nonumpy
 | `py315-latest` | 3.15 | Latest compatible stable release, >=2.5 |
 | `py312-nonumpy` | 3.12 | Not installed |
 
-All three environments currently run the scalar suite. NumPy is a test dependency
-only; the optional array interface will be introduced separately. CI uploads each
+All three environments run the scalar suite against an installed wheel. The min
+and latest environments install the arrays extra and run the array tests too;
+nonumpy verifies scalar independence and the missing-array-dependency message.
+Array test modules skip collection when NumPy is absent. CI uploads each
 environment's coverage with a distinct flag, which Codecov combines for the commit.
 

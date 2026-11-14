@@ -30,9 +30,8 @@ def test_distribution_metadata():
     metadata = importlib.metadata.metadata("chainfix")
     assert metadata["Requires-Python"] == ">=3.12"
     assert metadata["Version"] == chainfix.__version__
-    # Intentional baseline tripwire: when arrays lands, check that NumPy is
-    # required only by the arrays extra and that the scalar core stays independent.
-    assert not metadata.get_all("Requires-Dist")
+    assert metadata.get_all("Provides-Extra") == ["arrays"]
+    assert metadata.get_all("Requires-Dist") == ['numpy>=2.5; extra == "arrays"']
 
 
 @pytest.mark.parametrize("entry", ("chainfix", "chainfix.binary", "chainfix.complex"))
@@ -79,6 +78,8 @@ def test_tox_dependency_environment():
     assert Path(chainfix.__file__).resolve().is_relative_to(Path(sys.prefix).resolve())
     if mode == "absent":
         assert importlib.util.find_spec("numpy") is None
+        with pytest.raises(ImportError, match=r"chainfix\[arrays\]"):
+            importlib.import_module("chainfix.arrays")
     else:
         version = importlib.metadata.version("numpy")
         if mode == "min":
@@ -86,3 +87,28 @@ def test_tox_dependency_environment():
         else:
             assert mode == "latest"
             assert tuple(map(int, version.split(".")[:2])) >= (2, 5)
+
+
+def test_arrays_missing_dependency_message():
+    subprocess.run(
+        [sys.executable, "-I", "-c", """
+import importlib.abc
+import sys
+
+class MissingNumpy(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname == 'numpy':
+            raise ModuleNotFoundError("No module named 'numpy'", name='numpy')
+
+sys.meta_path.insert(0, MissingNumpy())
+import chainfix
+try:
+    from chainfix import arrays
+except ImportError as error:
+    assert 'chainfix[arrays]' in str(error)
+else:
+    raise AssertionError('array import should require NumPy')
+assert chainfix.Fixb(0.5) == 0.5
+"""],
+        check=True,
+    )

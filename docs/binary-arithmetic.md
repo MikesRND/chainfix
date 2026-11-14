@@ -114,8 +114,9 @@ Arithmetic operands may be binary fixed-point scalars or Python integer constant
 Each integer constant uses a minimal signed format at precision zero, including
 one-bit signed zero. Float, Fraction, decimal, and Python complex arithmetic
 operands require explicit binary construction; unsupported operator operands
-return `NotImplemented` so Python can try the reflected operation. This stage
-does not include a NumPy integer adapter.
+return `NotImplemented` so Python can try the reflected operation. The optional
+[array adapter](arrays.md) accepts NumPy integer constants in array operations;
+the scalar core itself remains independent of NumPy.
 
 Comparison supports binary scalars, integers, floats, `Fraction`, and
 `decimal.Decimal` using exact values, without consulting arithmetic policy.
@@ -178,9 +179,8 @@ completed operation's quantization boundary.
 
 Signed 16-bit negation and absolute value need a signed 17-bit full result, because
 `-32768` can become `32768`, even if current inputs are small. Unsigned absolute
-value retains its format under full growth. The later array layer will need
-int16-to-int32 storage promotion for that signed 16-to-17-bit growth; arrays are
-not implemented in this stage.
+value retains its format under full growth. The [array adapter](arrays.md)
+promotes storage from int16 to int32 for that signed 16-to-17-bit growth.
 
 Quantization boundaries are observable. Nearest-even conversion of `0.3125` to
 precision 2 gives `0.25`; converting that to precision 1 gives `0.0`. Direct
@@ -312,6 +312,7 @@ floating-intermediate inaccuracies. Binary equality and hashing now reflect
 numeric values rather than object identity, and binary context setters copy all
 supplied contexts. Decimal behavior is preserved, including unsupported arithmetic.
 
-Arrays, NumPy dispatch, reductions, and reusable-buffer execution
-belong to later changes. Division, other bitwise operators, and transcendental
-functions remain unsupported. There is no public preparation or workspace API.
+[Arrays and the supported NumPy dispatch subset](arrays.md) are available through
+the optional arrays extra. Reductions and internal scratch-buffer reuse belong
+to later changes. Division, other bitwise operators, and transcendental functions
+remain unsupported. There is no public preparation or workspace API.
