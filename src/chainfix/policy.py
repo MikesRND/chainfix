@@ -65,7 +65,9 @@ type ResultFormat = Literal["full"] | Format
 class Math:
     """Rounding, overflow, and independent operation quantization boundaries.
 
-    ``accumulator`` is reserved for the later reduction API.
+    ``product`` and ``sum`` bound elementary results. In array reductions
+    ``product`` applies to each term, ``accumulator`` to every ordered addition,
+    and ``sum`` to the final result.
     """
 
     rounding: Rounding | str = Rounding.NEAREST_EVEN

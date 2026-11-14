@@ -122,17 +122,19 @@ complex, lists, tuples, and bare ndarrays. Unsupported arithmetic such as
 `z + 1.5` also raises `TypeError`. Explicit `cfa.*` functions reject unsupported
 operands, including sentinel equality comparisons.
 
-NumPy ufuncs return `NotImplemented` for foreign operand types so their own
-handlers can participate. Recognized unsupported NumPy scalars and bare ndarrays
-still raise. Some NumPy scalar-left comparison operators first convert themselves
-to a bare zero-dimensional ndarray and are therefore rejected; explicit calls
+NumPy ufuncs and array functions return `NotImplemented` for foreign operand
+types so their own handlers can participate, in either operand order. Recognized
+unsupported NumPy scalars and bare ndarrays still raise. Some NumPy scalar-left
+comparison operators first convert themselves to a bare zero-dimensional ndarray
+and are therefore rejected; explicit calls
 such as `np.equal(np.int64(1), z)` preserve the scalar and are supported.
 
 ## Arithmetic and policy boundaries
 
 Operators `+`, `-`, `*`, reflected forms, unary `+`/`-`, and real `abs` share the
 explicit functions `cfa.add`, `subtract`, `multiply`, `positive`, `negative`, and
-`absolute`. `cfa.conjugate` and `cfa.mag2` also have array methods. Complex absolute
+`absolute`. `cfa.conjugate`, `cfa.mag2`, and `cfa.sum` also have array methods; `@`
+is the [matrix product](#reductions). Complex absolute
 value and complex ordering are unsupported. `mag2` computes both component
 squares and their sum exactly, then applies **sum policy once**; product policy
 does not quantize the partial squares. Its full result is signed.
@@ -214,6 +216,97 @@ Shape, layout, writability, overlap, and known domain errors are checked before
 writing output. After numerical execution begins, output contents are unspecified
 if an operation raises; there is no public transactional guarantee.
 
+## Reductions
+
+`cfa.sum`, `cfa.dot`, and `cfa.matmul` reduce along a logical axis. The trailing
+I/Q storage axis is never reduced: complex components accumulate independently.
+Each reduction has up to three quantization boundaries, applied in this order:
+
+1. **Product** (`dot`/`matmul` only): product policy applies once to each
+   completed real or complex product, exactly as in elementwise multiplication.
+2. **Accumulator**: with `accumulator="full"` the running sum stays exact. With
+   an explicit format the sum starts at zero and is quantized to that format
+   after every addition, in logical left-to-right order.
+3. **Sum**: sum policy selects the final result format. An `out` destination is
+   converted after that, with the same rounding and overflow policy.
+
+```python
+s8 = cf.Format(base=2, signed=True, wordlength=8, precision=0)
+x = cfa.array([100, 100, -100], format=s8)
+
+cfa.sum(x)                                                    # 100, signed 10-bit
+cfa.sum(x, math=cf.Math(sum=s8, overflow="saturate"))         # 100: exact sum, then saturate
+cfa.sum(x, math=cf.Math(accumulator=s8, overflow="saturate")) # 27: 127 after the second term
+```
+
+These are different requested computations, not alternative implementations of
+one sum. Rounding in the accumulator is likewise order dependent: halves
+accumulated at precision 0 with nearest-even rounding give 1 for `[0.5, 0.5, 1]`
+and 2 for `[1, 0.5, 0.5]`.
+
+A full sum of `n` terms adds `ceil(log2(n))` guard bits to the term format,
+computed from the declared count and format, never from current samples. Empty
+reductions return a formatted zero and one-term reductions add no guard bits.
+For `dot` and `matmul` the terms are products, so the sum starts from the
+product format: a one-term complex-by-complex `dot` has exactly the format of
+the elementwise complex product. An explicit accumulator already bounds every
+partial sum, so with `sum="full"` the result keeps the accumulator format
+without guard bits. Complex results require signed product, accumulator, and
+sum formats.
+
+`cfa.sum(x, axis=None, *, keepdims=False, out=None, math=None)` reduces every
+logical sample in C order, or one integer axis (negative values count from the
+end). `x.sum(...)` is the same function. Axis tuples are not supported. As in
+NumPy, axis `0` or `-1` is accepted for a zero-dimensional array and reduces its
+single sample.
+
+`cfa.dot(a, b)` is the inner product of two one-dimensional arrays of equal
+length. It does **not** conjugate either operand. `cfa.matmul(a, b)` and the `@`
+operator follow NumPy's logical shape rules: the product runs over the last two
+logical axes, leading axes broadcast as a stack, a one-dimensional left operand
+is a row and a one-dimensional right operand a column, and that added axis is
+removed from the result. Zero-dimensional operands are rejected. Row `i`, column
+`j` of the result accumulates `a[i, k] * b[k, j]` in increasing `k`. There is no
+mutating `@=`; it rebinds like the other augmented operators.
+
+All three accept fixed-point arrays only, not scalars, integer constants, or
+ndarrays. They always return an array: a full reduction is zero-dimensional, and
+`result[()]` extracts the `Fixb`, `Ufixb`, or `CFixb` scalar.
+
+The same checked int64 domain applies. The full product format, each aligned
+operand, each exact accumulator step, and a full sum with its guard bits must
+all be representable; otherwise the call raises `ValueError` before executing,
+even if a bounded policy would produce a small result. The message names the
+product, accumulator, alignment, or full-sum stage that failed. A sum format or
+destination that cannot be reached reports the same generic conversion error as
+elementwise operations. For example, a full sum
+of two signed 64-bit terms and a full `dot` of two-element signed 32-bit vectors
+are rejected. With an explicit accumulator only each single step must fit, not
+the unbounded total.
+
+### Cost of ordered accumulation
+
+Exact products with exact accumulation use NumPy's integer sum and matrix
+product. A bounded product is still vectorized, in blocks along the summed axis
+that bound temporary storage. An explicit accumulator must visit terms one at a
+time, because each addition is quantized before the next; that loop is
+vectorized across the independent result elements. A matrix product with many
+result elements and few terms is therefore cheap to order, while a long
+one-dimensional `dot` or `sum` pays a Python-level step per term.
+
+Medians from [benchmarks/reductions.py](../benchmarks/reductions.py) for 16-bit
+complex samples (CPython 3.12.13, NumPy 2.5.0, Linux/WSL2, one pinned CPU; no CI
+timing gate):
+
+| Workload | Exact | Bounded product | Bounded product and accumulator |
+|---|---|---|---|
+| `matmul`, (4096, 64) by (64,) | 0.66 ms | 2.6 ms | 2.9 ms |
+| `dot`, 4096 terms | 0.03 ms | 0.06 ms | 24.5 ms |
+
+```bash
+python benchmarks/reductions.py --cpu 2
+```
+
 ## NumPy subset
 
 `np.add`, `subtract`, `multiply`, `positive`, `negative`, `conjugate`, real
@@ -221,6 +314,18 @@ if an operation raises; there is no public transactional guarantee.
 same engine. Arithmetic `out` tuples are normalized. Only literal `where=True`
 is supported. `dtype`, `casting`, and other extra keywords are rejected.
 
-Other ufuncs, ufunc methods such as `reduce`/`at`/`outer`, and NumPy array functions
-fail explicitly. Reductions, dot/matmul, division, shifts, square roots, and broad
-ndarray compatibility are not part of this stage.
+`np.sum`, `np.add.reduce`, `np.dot`, `np.matmul`, and `@` dispatch to the
+[reduction](#reductions) engine under the active context. `np.sum` reduces every
+axis by default and `np.add.reduce` the first, as in NumPy. They accept `axis`,
+`keepdims`, and `out` where NumPy does, by position or keyword. `dtype=None` and
+the literal Python `where=True` are accepted as NumPy's defaults, as is NumPy's
+`np._NoValue` placeholder wherever a plain ndarray accepts it. Any other `dtype`
+or `where`, `initial`, non-boolean `keepdims`, axis tuples, and `np.matmul`'s
+`axes` are rejected. Bare ndarrays and ndarray subclasses are rejected as
+operands and destinations.
+
+Other ufuncs, other ufunc methods such as `accumulate`/`at`/`outer` and
+`reduce` of anything but `np.add`, and other NumPy array functions fail
+explicitly. Conjugating products (`np.vdot`), broader `dot` forms, masked or
+initialized reductions, division, shifts, square roots, and broad ndarray
+compatibility are not supported.

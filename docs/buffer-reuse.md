@@ -85,7 +85,8 @@ unspecified; a later valid call can reuse the workspace.
 
 Public `out=` guarantees destination reuse, not zero temporary allocation. The
 workspace remains private. Public workspace design, generalized strides,
-overlapping outputs, and reductions remain separate API decisions.
+and overlapping outputs remain separate API decisions. Reductions allocate
+their own work storage and do not use this workspace.
 
 The shared conversion kernel also serves ordinary array operations. A one-off
 conversion allocates only the scratch its rounding and overflow branch uses
