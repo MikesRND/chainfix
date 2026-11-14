@@ -194,6 +194,7 @@ class CFixb:
         raise TypeError("complex absolute value is unsupported; use mag2()")
 
 
+# Keep this module/name stable: saved pickles reference this reconstruction helper.
 def _restore_complex(cls, i: int, q: int, format: Format):
     return cls.from_raw(i=i, q=q, format=format)
 
