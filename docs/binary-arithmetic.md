@@ -81,6 +81,14 @@ fixed-point scalars. Conversion uses exact integer ratios, including a float's
 floating intermediate is used. Existing decimal scalars can be converted without
 changing decimal construction, inspection, or context behavior.
 
+Boolean numeric inputs and arithmetic operands retain Python's integer semantics:
+`True` is 1 and `False` is 0; booleans remain invalid for format dimensions, raw
+stored integers, shift counts, and scaling exponents.
+
+Construction from `decimal.Decimal` is deliberately unsupported even though exact
+comparison accepts it. For a finite Decimal, convert explicitly through
+`Fraction(Decimal("0.5"))` before binary construction.
+
 ```python
 from fractions import Fraction
 

@@ -264,6 +264,26 @@ def test_exact_numeric_comparison_and_hash(value):
         x < 1j
 
 
+def test_booleans_are_numeric_values_and_arithmetic_operands():
+    for cls in (cf.Fixb, cf.Ufixb):
+        assert cls(True, 8, 4) == 1
+        assert cls(True, 8, 4).int == 16
+        assert cls(False, 8, 4) == 0
+    x = cf.Fixb(0.5, 8, 4)
+    assert x + True == True + x == Fraction(3, 2)
+    assert x + False == False + x == x
+
+
+def test_decimal_construction_requires_explicit_fraction_conversion():
+    value = Decimal("0.5")
+    for cls in (cf.Fixb, cf.Ufixb):
+        with pytest.raises(TypeError):
+            cls(value, 8, 4)
+        converted = cls(Fraction(value), 8, 4)
+        assert converted.as_integer_ratio() == (1, 2)
+        assert converted == value
+
+
 def test_reflected_integers_and_deterministic_constant_formats():
     x = cf.Fixb(Fraction(3, 4), 4, 2)
     for constant in (-9, -1, 0, 1, 8, 2 ** 80):
