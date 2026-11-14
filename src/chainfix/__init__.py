@@ -22,6 +22,7 @@ __all__ = [
     'DecimalContext',
     'get_decimal_context',
     'set_decimal_context',
+    'local_decimal_context',
     'Fixb',
     'Ufixb',
     'CFixb',
@@ -54,6 +55,7 @@ from chainfix.context import get_decimal_context
 from chainfix.context import set_binary_context
 from chainfix.context import set_decimal_context
 from chainfix.context import local_binary_context
+from chainfix.context import local_decimal_context
 from chainfix.format import Format
 from chainfix.policy import Math, Overflow, Rounding, FixedPointOverflowError
 from chainfix.binary import add, subtract, multiply, positive, negative, absolute

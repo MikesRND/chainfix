@@ -12,9 +12,16 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Regression coverage for installing default and custom contexts."""
+"""Installing, scoping, and inheriting immutable binary and decimal contexts."""
 
-from contextvars import Context
+import asyncio
+import copy
+import pickle
+import sys
+import threading
+from concurrent.futures import ThreadPoolExecutor
+from contextvars import Context, copy_context
+from types import SimpleNamespace
 
 import pytest
 
@@ -24,61 +31,204 @@ from chainfix.context import (
     DecimalContext,
     DefaultBinaryContext,
     DefaultDecimalContext,
-    Overflow,
     get_binary_context,
     get_decimal_context,
+    local_binary_context,
+    local_decimal_context,
     set_binary_context,
     set_decimal_context,
 )
 
+BINARY = SimpleNamespace(cls=BinaryContext, other=DecimalContext, default=DefaultBinaryContext,
+                         base=2, library=(32, 16), get=get_binary_context,
+                         set=set_binary_context, local=local_binary_context, scalar=Fixb)
+DECIMAL = SimpleNamespace(cls=DecimalContext, other=BinaryContext, default=DefaultDecimalContext,
+                          base=10, library=(256, 18), get=get_decimal_context,
+                          set=set_decimal_context, local=local_decimal_context, scalar=Fixd)
+KINDS = pytest.mark.parametrize("kind", [BINARY, DECIMAL], ids=["binary", "decimal"])
 
-@pytest.mark.parametrize(
-    "default,get_context,set_context,scalar",
-    [
-        (DefaultBinaryContext, get_binary_context, set_binary_context, Fixb),
-        (DefaultDecimalContext, get_decimal_context, set_decimal_context, Fixd),
-    ],
-    ids=["binary", "decimal"],
-)
-def test_setting_default_copies_and_preserves_it(default, get_context, set_context, scalar):
+
+def sizes(value):
+    return value.wordlength, value.precision
+
+
+@KINDS
+def test_default_is_installed_without_copy_and_is_frozen(kind):
     def check():
-        expected = (default.wordlength, default.precision, default.overflow)
-        set_context(default)
-        current = get_context()
-        assert current is not default
-        assert (current.wordlength, current.precision, current.overflow) == expected
+        assert kind.get() is kind.default
+        kind.set(kind.default)
+        assert kind.get() is kind.default
+        for attr, value in (("wordlength", 20), ("precision", 5), ("overflow", "wrap")):
+            with pytest.raises(AttributeError):
+                setattr(kind.default, attr, value)
+        # Re-running __init__ is a no-op, so the default and its hash stay fixed.
+        before = hash(kind.default)
+        members = {kind.default}
+        kind.default.__init__(wordlength=8, precision=2)
+        assert sizes(kind.default) == kind.library
+        assert hash(kind.default) == before and kind.default in members
+        assert sizes(kind.scalar()) == kind.library
+    Context().run(check)
+    # Nothing can reconfigure the library defaults that an empty context sees.
+    assert Context().run(lambda: sizes(kind.scalar())) == kind.library
 
-        current.wordlength = 20
-        current.precision = 5
-        current.overflow = Overflow.WRAP
-        assert (scalar().wordlength, scalar().precision) == (20, 5)
-        assert (default.wordlength, default.precision, default.overflow) == expected
 
-        set_context(default)
-        restored = get_context()
-        assert restored is not current
-        assert restored is not default
-        assert (restored.wordlength, restored.precision, restored.overflow) == expected
-        assert (scalar().wordlength, scalar().precision) == expected[:2]
-
-    # Keep this regression independent of the ambient context and test ordering.
+@KINDS
+def test_setting_custom_context(kind):
+    def check():
+        custom = kind.cls(wordlength=20, precision=5)
+        kind.set(custom)
+        assert kind.get() is custom
+        assert sizes(kind.scalar()) == (20, 5)
+        with pytest.raises(AttributeError):
+            custom.precision = 8
+        assert sizes(kind.scalar()) == (20, 5)
     Context().run(check)
 
 
-@pytest.mark.parametrize(
-    "context_type,get_context,set_context,scalar",
-    [
-        (BinaryContext, get_binary_context, set_binary_context, Fixb),
-        (DecimalContext, get_decimal_context, set_decimal_context, Fixd),
-    ],
-    ids=["binary", "decimal"],
-)
-def test_setting_custom_context(context_type, get_context, set_context, scalar):
+@KINDS
+def test_setters_and_scopes_reject_other_kinds(kind):
     def check():
-        custom = context_type(wordlength=20, precision=5, overflow=Overflow.WRAP)
-        set_context(custom)
-        current = get_context()
-        assert (current.wordlength, current.precision, current.overflow) == (20, 5, Overflow.WRAP)
-        assert (scalar().wordlength, scalar().precision) == (20, 5)
-
+        before = kind.get()
+        for value in (None, kind.other(), "context"):
+            with pytest.raises(TypeError):
+                kind.set(value)
+            assert kind.get() is before
+        with pytest.raises(TypeError):
+            with kind.local(kind.other()):
+                pass
+        assert kind.get() is before
     Context().run(check)
+
+
+@KINDS
+@pytest.mark.parametrize("primed", [False, True], ids=["unprimed", "primed"])
+def test_child_tasks_cannot_change_the_parent_context(kind, primed):
+    async def child():
+        with pytest.raises(AttributeError):
+            kind.get().precision = 3
+        kind.set(kind.get().replace(precision=3))
+        return kind.get().precision
+
+    async def parent():
+        if primed:
+            kind.get()
+        before = kind.get()
+        assert await asyncio.create_task(child()) == 3
+        assert kind.get() is before
+        return kind.get().precision
+
+    assert Context().run(asyncio.run, parent()) == kind.library[1]
+
+
+@KINDS
+def test_local_scopes_restore_nest_and_validate_before_binding(kind):
+    def check():
+        before = kind.get()
+        with pytest.raises(RuntimeError):
+            with kind.local(precision=3) as outer:
+                assert kind.get() is outer
+                assert outer.precision == 3
+                with kind.local(outer, wordlength=24) as inner:
+                    assert sizes(inner) == (24, 3)
+                    assert sizes(kind.scalar()) == (24, 3)
+                assert kind.get() is outer
+                raise RuntimeError("restore the entry binding")
+        assert kind.get() is before
+        with kind.local(kind.default) as same:
+            assert same is kind.default
+        with kind.local(precision=None) as unchanged:
+            assert unchanged is before
+        for bad in ({"wordlength": 0}, {"wordlength": True}, {"precision": 1.5}):
+            with pytest.raises((TypeError, ValueError)):
+                with kind.local(**bad):
+                    pass
+            assert kind.get() is before
+    Context().run(check)
+
+
+@KINDS
+def test_local_scopes_work_as_decorators(kind):
+    @kind.local(precision=3)
+    def scoped_sizes():
+        return sizes(kind.scalar())
+
+    def check():
+        expected = (kind.library[0], 3)
+        assert scoped_sizes() == scoped_sizes() == expected
+        assert kind.get() is kind.default
+    Context().run(check)
+
+
+@KINDS
+def test_contexts_are_final_values(kind):
+    context = kind.cls(20, 5)
+    same = kind.cls(20, 5)
+    assert context == same and hash(context) == hash(same)
+    assert context != kind.cls(20, 6)
+    assert context != kind.other(20, 5)
+    assert context != (20, 5)
+    assert context.base == kind.cls.base == kind.base
+    assert context.replace() is context
+    assert context.replace(wordlength=None, precision=None) is context
+    with pytest.raises(TypeError, match="unknown context setting"):
+        context.replace(scale=3)
+    restored = pickle.loads(pickle.dumps(context))
+    assert restored == context and type(restored) is kind.cls
+    assert copy.copy(context) is context
+    assert copy.deepcopy(context) is context
+    for attr in ("wordlength", "precision", "base", "unrelated"):
+        with pytest.raises(AttributeError, match="immutable; use replace"):
+            delattr(context, attr)
+    with pytest.raises(AttributeError, match="immutable; use replace"):
+        context.unrelated = 1
+    assert repr(context).startswith(f"{kind.cls.__name__}(wordlength=20, precision=5")
+    with pytest.raises(TypeError, match="final"):
+        type("Derived", (kind.cls,), {"__slots__": ()})
+    if sys.version_info >= (3, 13):
+        assert copy.replace(context, precision=6) == context.replace(precision=6)
+
+
+@KINDS
+def test_empty_and_copied_execution_contexts(kind):
+    def configure_and_observe():
+        kind.set(kind.cls(20, 5))
+        caller = kind.get()
+        copied = copy_context()
+        assert copied.run(kind.get) is caller
+
+        def rebind():
+            kind.set(kind.cls(21, 6))
+            return kind.get()
+
+        assert Context().run(rebind) == kind.cls(21, 6)
+        assert copied.run(rebind) == kind.cls(21, 6)
+        assert kind.get() is caller
+        with ThreadPoolExecutor(1) as pool:
+            assert pool.submit(copy_context().run, kind.get).result() is caller
+        return Context().run(kind.get)
+
+    assert Context().run(configure_and_observe) is kind.default
+
+
+@KINDS
+@pytest.mark.skipif(sys.version_info < (3, 14), reason="Thread(context=...) requires Python 3.14")
+def test_thread_context_argument(kind):
+    def configure():
+        custom = kind.cls(20, 5)
+        kind.set(custom)
+        seen = {}
+
+        def observe(name):
+            seen[name] = kind.get()
+            kind.set(kind.cls(21, 6))
+
+        for name, context in (("empty", Context()), ("copied", copy_context())):
+            thread = threading.Thread(target=observe, args=(name,), context=context)
+            thread.start()
+            thread.join()
+        assert seen["empty"] is kind.default
+        assert seen["copied"] is custom
+        assert kind.get() is custom
+
+    Context().run(configure)
