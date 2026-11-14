@@ -325,6 +325,11 @@ class Array:
     def __matmul__(self, other):
         return matmul(self, other) if isinstance(other, Array) else NotImplemented
 
+    def __rmatmul__(self, other):
+        # Reached when a left-hand Array subclass declines the operation, as
+        # the other reflected operators are.
+        return matmul(other, self) if isinstance(other, Array) else NotImplemented
+
     def __pos__(self):
         return positive(self)
 

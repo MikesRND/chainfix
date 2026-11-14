@@ -547,6 +547,19 @@ def test_dot_and_matmul_argument_validation():
                  lambda: v @ cf.Fixb(1, 8, 2), lambda: cf.Fixb(1, 8, 2) @ v):
         with pytest.raises(TypeError):
             call()
+    # A left-hand subclass that declines @ falls back to the reflected
+    # operator, exactly as it does for the elementwise operators.
+    class Declining(cfa.Array):
+        def __matmul__(self, other):
+            return NotImplemented
+
+        def __add__(self, other):
+            return NotImplemented
+
+    declining = Declining._from_storage(v.raw, q, False)
+    assert cfa.matmul(declining, v).raw.tolist() == (declining @ v).raw.tolist() == 14
+    assert (v @ declining).raw.tolist() == 14 and (declining + v).raw.tolist() == [2, 4, 6]
+    assert (declining @ m[0]).format == cfa.matmul(v, m[0]).format
     # Without an in-place operator, @= computes a new array and rebinds the name.
     left = original = raw_array([[1, 2], [3, 4]], q)
     left @= left
