@@ -387,14 +387,20 @@ def test_rejected_numpy_dispatch_and_operands():
                                     "__lt__", "__le__", "__gt__", "__ge__"))
 def test_operators_return_notimplemented_for_unsupported_types(method):
     z = cfa.array([1j, 1], format=fmt())
-    for other in (None, "raise", object(), [1, 2], 1.5, 1j, Fraction(1, 2),
-                  Decimal("1"), np.zeros(2), np.float64(1.5), np.timedelta64(1, "D")):
+    for other in (None, "raise", object()):
         assert getattr(z, method)(other) is NotImplemented
+    for other in ([1, 2], 1.5, 1j, Fraction(1, 2),
+                  Decimal("1"), np.zeros(2), np.float64(1.5), np.timedelta64(1, "D")):
+        if method in ("__eq__", "__ne__"):
+            with pytest.raises(TypeError):
+                getattr(z, method)(other)
+        else:
+            assert getattr(z, method)(other) is NotImplemented
 
 
 def test_unsupported_equality_and_sentinel_membership():
     z = cfa.array([1j, 1], format=fmt())
-    for other in (None, "raise", object(), [1, 2], 1.5, 1j, Fraction(1, 2), Decimal("1")):
+    for other in (None, "raise", object()):
         assert (z == other) is False
         assert (other == z) is False
         assert (z != other) is True
@@ -466,7 +472,7 @@ def test_explicit_and_ufunc_calls_keep_rejecting_unsupported_operands(name):
     for function in (getattr(cfa, name), getattr(np, name)):
         for other in (None, "raise", object(), 1.5):
             for a, b in ((z, other), (other, z)):
-                with pytest.raises(TypeError, match="operands must be"):
+                with pytest.raises(TypeError):
                     function(a, b)
 
 
@@ -575,13 +581,13 @@ def test_array_pickle_restores_exact_storage(protocol_array, readonly, protocol)
     assert not np.shares_memory(restored.raw, source.raw)
 
 
-def test_array_copy_and_pickle_bypass_construction_and_validation(monkeypatch):
+def test_array_copy_and_pickle_bypass_quantization_and_value_scan(monkeypatch):
     source = cfa.array([0.5 + 0.25j], format=fmt(16, 14)).imag
 
     def reject(*args, **kwargs):
         raise AssertionError("copy/pickle must restore storage directly")
 
-    for name in ("_from_values", "from_raw", "_check_storage", "_selected_math"):
+    for name in ("_from_values", "from_raw", "_selected_math"):
         monkeypatch.setattr(cfa, name, reject)
     monkeypatch.setattr(cfa.kernels, "convert", reject)
     for restored in (copy(source), deepcopy(source), pickle.loads(pickle.dumps(source))):

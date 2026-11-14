@@ -24,6 +24,9 @@ from __future__ import annotations
 import builtins
 from copy import deepcopy
 from dataclasses import replace
+from decimal import Decimal
+from numbers import Number
+import operator
 
 try:
     import numpy as np
@@ -66,6 +69,8 @@ def _supported_layout(raw, complex):
 
 
 def _check_storage(raw, format, complex):
+    if type(raw) is not np.ndarray:
+        raise TypeError("raw storage must be a plain ndarray, not a subclass")
     if raw.dtype.kind not in "iu" or not raw.dtype.isnative or raw.itemsize > 8:
         raise TypeError("raw storage must have a native integer dtype of at most 64 bits")
     limits = np.iinfo(raw.dtype)
@@ -204,13 +209,16 @@ class Array:
             raise TypeError("len() of a zero-dimensional array")
         return self.shape[0]
 
+    def __iter__(self):
+        if not self.ndim:
+            raise TypeError("iteration over a zero-dimensional array")
+        return (self[index] for index in range(len(self)))
+
     def __bool__(self):
         raise TypeError("fixed-point array truth is ambiguous; compare elements explicitly")
 
     def __getitem__(self, key):
         keys = key if isinstance(key, tuple) else (key,)
-        if not self.ndim and len(keys) == 1 and keys[0] is Ellipsis:
-            return Array._from_storage(self.raw.view(), self.format, self.is_complex)
         for item in keys:
             if item is None or item is Ellipsis:
                 continue
@@ -223,18 +231,15 @@ class Array:
         count = sum(item is not None and item is not Ellipsis for item in keys)
         if ellipses > 1 or count > self.ndim:
             raise IndexError("too many indices or ellipses for logical array shape")
-        expanded = []
-        for item in keys:
-            if item is Ellipsis:
-                expanded.extend([slice(None)] * (self.ndim - count))
-            else:
-                expanded.append(item)
+        # Keep even a zero-width ellipsis: NumPy then returns a shared 0-d
+        # ndarray instead of detaching a scalar when all axes are selected.
+        expanded = list(keys)
         if not ellipses:
             expanded.extend([slice(None)] * (self.ndim - count))
         if self.is_complex:
             expanded.append(slice(None))
         raw = self.raw[tuple(expanded)]
-        if self.is_complex and raw.shape == (2,):
+        if self.is_complex and raw.shape == (2,) and not ellipses:
             return CFixb.from_raw(i=int(raw[0]), q=int(raw[1]), format=self.format)
         if not self.is_complex and np.isscalar(raw):
             return (Fixb if self.format.signed else Ufixb).from_raw(int(raw), format=self.format)
@@ -249,6 +254,13 @@ class Array:
         raise TypeError(f"NumPy function {func.__name__} is unsupported for fixed-point arrays")
 
     def __array_ufunc__(self, ufunc, method, *inputs, **kwargs):
+        # Leave foreign types a chance to dispatch, but keep recognized numeric
+        # inputs strict so NumPy cannot silently coerce them to object arrays.
+        outputs = kwargs.get("out", ())
+        outputs = outputs if isinstance(outputs, tuple) else (outputs,)
+        if any(not _supports_operand(value) and not _recognized_operand(value)
+               for value in inputs + tuple(out for out in outputs if out is not None)):
+            return NotImplemented
         if method != "__call__" or ufunc not in _UFUNCS:
             raise TypeError(f"NumPy {ufunc.__name__}.{method} is unsupported for fixed-point arrays")
         if kwargs.pop("where", True) is not True:
@@ -291,10 +303,10 @@ class Array:
         return absolute(self)
 
     def __eq__(self, other):
-        return equal(self, other) if _supports_operand(other) else NotImplemented
+        return equal(self, other) if _comparison_dispatch(other) else NotImplemented
 
     def __ne__(self, other):
-        return not_equal(self, other) if _supports_operand(other) else NotImplemented
+        return not_equal(self, other) if _comparison_dispatch(other) else NotImplemented
 
     def __lt__(self, other):
         return less(self, other) if _supports_operand(other) else NotImplemented
@@ -314,13 +326,16 @@ class Array:
 
 # Keep this module/name stable: saved pickles reference this reconstruction helper.
 def _restore_array(cls, raw, format, complex, writeable):
+    _complex_flag(complex)
+    kernels.check_format(format, complex)
+    _check_storage(raw, format, complex)
     result = cls._from_storage(raw, format, complex)
     result.raw.flags.writeable = writeable
     return result
 
 
 def _native_value(value):
-    return value.item() if isinstance(value, np.generic) else value
+    return value.item() if isinstance(value, np.generic) and value.dtype.kind in "biufc" else value
 
 
 def _supports_operand(value):
@@ -329,23 +344,27 @@ def _supports_operand(value):
     return isinstance(_native_value(value), (Array, Fixb, Ufixb, CFixb, int))
 
 
+def _recognized_operand(value):
+    return isinstance(value, (Number, Decimal, list, tuple, np.ndarray, np.generic))
+
+
+def _comparison_dispatch(value):
+    # Equality's fallback is scalar False/True, so unsupported numeric inputs
+    # must reach validation rather than silently looking like a comparison.
+    return _supports_operand(value) or _recognized_operand(value)
+
+
 def _from_values(values, format, complex, math):
     _complex_flag(complex, optional=True)
     policy = _selected_math(math)
     if isinstance(values, Array):
-        if complex is False and values.is_complex:
-            raise TypeError("complex input cannot construct a real array")
-        result = values.quantize(format, math=policy)
-        if complex and not values.is_complex:
-            kernels.check_format(format, True)
-            raw = np.zeros(values.shape + (2,), dtype=kernels.storage_dtype(format))
-            raw[..., 0] = result.raw
-            return Array._from_storage(raw, format, True)
-        return result
-    # Object storage is confined to setup: preserve heterogeneous exact inputs
-    # rather than allowing NumPy to promote large integers to float first.
-    values = np.asarray(values, dtype=object)
-    has_complex = any(isinstance(v, (builtins.complex, np.complexfloating, CFixb)) for v in values.flat)
+        has_complex = values.is_complex
+    else:
+        # Object storage is confined to setup: preserve heterogeneous exact
+        # inputs rather than promoting large integers to float first.
+        values = np.asarray(values, dtype=object)
+        has_complex = any(isinstance(v, (builtins.complex, np.complexfloating, CFixb))
+                          for v in values.flat)
     if complex is False and has_complex:
         raise TypeError("complex input cannot construct a real array")
     complex = has_complex if complex is None else complex
@@ -373,6 +392,8 @@ def from_raw(raw, *, format: Format, complex: bool = False, copy: bool = False) 
     kernels.check_format(format, complex)
     if not isinstance(copy, bool):
         raise TypeError("copy must be a boolean")
+    if isinstance(raw, np.ndarray) and type(raw) is not np.ndarray:
+        raise TypeError("raw storage must be a plain ndarray, not a subclass")
     if not copy and not isinstance(raw, np.ndarray):
         raise ValueError("copy=False requires ndarray storage")
     if copy:
@@ -398,18 +419,25 @@ def empty(shape, *, format: Format, complex: bool = False) -> Array:
     return Array._from_storage(raw, format, complex)
 
 
-def _as_operand(value):
-    if isinstance(value, Array):
-        return value
+def _scalar_operand(value):
     value = _native_value(value)
     if isinstance(value, CFixb):
-        kernels.check_format(value.format, True)
-        return Array._from_storage(np.array([value.real.int, value.imag.int], dtype=np.int64),
-                                   value.format, True)
+        return value
     value = _operand(value)
     if value is NotImplemented:
         raise TypeError("operands must be fixed-point arrays/scalars or integer constants; "
                         "use array() or from_raw() for ndarrays")
+    return value
+
+
+def _as_operand(value):
+    if isinstance(value, Array):
+        return value
+    value = _scalar_operand(value)
+    if isinstance(value, CFixb):
+        kernels.check_format(value.format, True)
+        return Array._from_storage(np.array([value.real.int, value.imag.int], dtype=np.int64),
+                                   value.format, True)
     kernels.check_format(value.format)
     return Array._from_storage(np.array(value.int, dtype=np.int64), value.format, False)
 
@@ -450,9 +478,10 @@ def _finish(i, q, full, target, policy, shape, out):
     destination = target if out is None else out.format
     if out is None:
         out = empty(shape, format=target, complex=complex)
-    i = kernels.convert(i, full, target, policy)
-    if complex:
-        q = kernels.convert(q, full, target, policy)
+    if full != target:
+        i = kernels.convert(i, full, target, policy)
+        if complex:
+            q = kernels.convert(q, full, target, policy)
     # Preserve the operation boundary even when out has a different format.
     if destination != target:
         i = kernels.convert(i, target, destination, policy)
@@ -570,8 +599,70 @@ def mag2(value, *, out=None, math: Math | None = None):
     return _unary(value, "mag2", out, math)
 
 
+_REVERSED_COMPARISON = {"equal": "equal", "not_equal": "not_equal", "less": "greater",
+                        "less_equal": "greater_equal", "greater": "less",
+                        "greater_equal": "less_equal"}
+_SCALAR_COMPARISON = {"equal": operator.eq, "not_equal": operator.ne, "less": operator.lt,
+                      "less_equal": operator.le, "greater": operator.gt,
+                      "greater_equal": operator.ge}
+
+
+def _compare_constant(raw, format, constant, precision, operation):
+    """Project an exact binary constant onto the array's raw grid, without
+    restricting the scalar format or creating a potentially enormous shift.
+    """
+    shift = format.precision - precision
+    if not constant:
+        floor, exact = 0, True
+    elif shift >= 0:
+        if abs(constant).bit_length() + shift > 64:
+            # Beyond every supported array range. Only the sign matters.
+            above = constant > 0
+            result = operation in (("not_equal", "less", "less_equal") if above
+                                   else ("not_equal", "greater", "greater_equal"))
+            return np.full(raw.shape, result, dtype=bool)
+        floor, exact = constant << shift, True
+    else:
+        floor = constant >> -shift
+        # Count trailing zero bits rather than constructing 2**(-shift).
+        exact = -shift < (constant & -constant).bit_length()
+
+    below = floor < format.min_int
+    above = floor > format.max_int or (floor == format.max_int and not exact)
+    if below or above:
+        result = operation in (("not_equal", "less", "less_equal") if above
+                               else ("not_equal", "greater", "greater_equal"))
+        return np.full(raw.shape, result, dtype=bool)
+    if operation in ("equal", "not_equal") and not exact:
+        return np.full(raw.shape, operation == "not_equal", dtype=bool)
+    # x < c uses ceil(c), x <= c uses floor(c); the mirrored relations
+    # use the same thresholds. Range checks above keep both within int64.
+    threshold = floor + (not exact and operation in ("less", "greater_equal"))
+    return getattr(np, operation)(raw, threshold)
+
+
+def _compare_array_scalar(a, b, operation):
+    complex = a.is_complex or isinstance(b, CFixb)
+    if complex and operation not in ("equal", "not_equal"):
+        raise TypeError("complex ordered comparisons are unsupported")
+    ai, aq = _components(a)
+    bi, bq = (b.real.int, b.imag.int) if isinstance(b, CFixb) else (b.int, 0)
+    if complex:
+        result = (_compare_constant(ai, a.format, bi, b.format.precision, "equal") &
+                  _compare_constant(aq, a.format, bq, b.format.precision, "equal"))
+        return ~result if operation == "not_equal" else result
+    return _compare_constant(ai, a.format, bi, b.format.precision, operation)
+
+
 def _compare(a, b, operation):
-    a, b = _as_operand(a), _as_operand(b)
+    a = a if isinstance(a, Array) else _scalar_operand(a)
+    b = b if isinstance(b, Array) else _scalar_operand(b)
+    if not isinstance(a, Array):
+        if not isinstance(b, Array):
+            return np.asarray(_SCALAR_COMPARISON[operation](a, b), dtype=bool)
+        a, b, operation = b, a, _REVERSED_COMPARISON[operation]
+    if not isinstance(b, Array):
+        return np.asarray(_compare_array_scalar(a, b, operation), dtype=bool)
     complex = a.is_complex or b.is_complex
     if complex and operation not in ("equal", "not_equal"):
         raise TypeError("complex ordered comparisons are unsupported")

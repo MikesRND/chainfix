@@ -41,6 +41,8 @@ components; Python complex inputs use their float components' exact ratios.
 NumPy integer, boolean, float16/32/64, and complex64/128 scalars are accepted by
 the adapter. Direct `Decimal` and nonfinite inputs are unsupported, as in the
 binary scalar constructors. No floating conversion fast path is used.
+An existing `Array` follows this same exact setup path, including when increasing
+precision would exceed the vector conversion's conservative intermediate domain.
 
 `cfa.from_raw(raw, *, format, complex=False, copy=False)` validates integer
 encodings without scaling. By default, `raw` must already be a supported native
@@ -49,6 +51,9 @@ it never silently copies. The storage dtype must hold the entire declared format
 range. A wider dtype is allowed. Every supplied encoding must fit the format,
 regardless of the current overflow policy. `copy=True` explicitly materializes
 C-contiguous, native-endian storage, including from lists or unsupported strides.
+ndarray subclasses, including `MaskedArray` and `matrix`, are rejected in both
+copy modes. Normalize them explicitly first if dropping subclass semantics is
+intended.
 
 `cfa.empty(shape, *, format, complex=False)` allocates uninitialized storage in
 the smallest suitable native integer dtype. It carries a format and no math
@@ -71,6 +76,8 @@ and read-only status. Copying and unpickling restore storage directly without
 quantization, context lookup, or a range scan. Deep copies and pickle round trips
 materialize component views as contiguous arrays; shared backing storage between
 distinct views is not preserved.
+Unpickling still checks format, native integer dtype capacity, layout, and the
+complex I/Q axis before restoring read-only status.
 
 External writers, including writes through `.raw`, **must preserve the declared
 value range, dtype, shape, and supported layout**. In particular, a subword format
@@ -95,6 +102,9 @@ logical axes are selected. Unit-step slices, `...`, and new axes return shared
 views when the resulting layout is supported; otherwise indexing raises rather
 than materializing. Indexing never addresses the I/Q axis. Zero-dimensional
 arrays support `[()]` for a scalar and `[...]` for a view. Empty arrays are valid.
+Even a zero-width ellipsis preserves a view: `x[0, ...]` on a one-dimensional
+array returns a shared zero-dimensional array. Iteration yields leading-axis
+items; iterating a zero-dimensional array raises `TypeError` immediately.
 
 Elementary operations broadcast logical shapes. Operands may be Chainfix arrays,
 binary fixed-point scalars, Python integers (including bool), or NumPy integer
@@ -104,12 +114,19 @@ both operand orders: use `array` for numeric values or `from_raw` for encodings.
 Lists, floats, Fraction, Decimal, and Python complex operands require explicit
 fixed-point construction to participate in fixed-point arithmetic/comparison.
 
-Python operator methods return `NotImplemented` for unsupported operand types,
-allowing reflected dispatch. Consequently `z == None` and `z == "raise"` return
-`False`, and the corresponding `!=` expressions return `True`. Unsupported
-arithmetic such as `z + 1.5` still raises `TypeError`. Bare ndarrays remain errors
-through NumPy dispatch. Explicit `cfa.*` functions and NumPy ufuncs raise
-`TypeError` for unsupported operands, including sentinel equality comparisons.
+Python operator methods allow foreign reflected dispatch with `NotImplemented`.
+Consequently `z == None` and `z == "raise"` return `False`, and the corresponding
+`!=` expressions return `True`. Equality with recognized unsupported numeric or
+sequence types instead raises `TypeError`, including floats, Fraction, Decimal,
+complex, lists, tuples, and bare ndarrays. Unsupported arithmetic such as
+`z + 1.5` also raises `TypeError`. Explicit `cfa.*` functions reject unsupported
+operands, including sentinel equality comparisons.
+
+NumPy ufuncs return `NotImplemented` for foreign operand types so their own
+handlers can participate. Recognized unsupported NumPy scalars and bare ndarrays
+still raise. Some NumPy scalar-left comparison operators first convert themselves
+to a bare zero-dimensional ndarray and are therefore rejected; explicit calls
+such as `np.equal(np.int64(1), z)` preserve the scalar and are supported.
 
 ## Arithmetic and policy boundaries
 
@@ -138,7 +155,10 @@ samples would fit int16. Unsigned absolute value preserves its format.
 `equal`, `not_equal`, `less`, `less_equal`, `greater`, and `greater_equal`, and the
 corresponding operators, return boolean ndarrays for supported operand types.
 Comparisons are exact and independent of context, even across precisions too far
-apart for arithmetic alignment. Equality includes both complex components.
+apart for arithmetic alignment. Python integer constants and binary fixed-point
+scalar constants can exceed the int64 arithmetic domain: comparisons check
+declared bounds and use exact floor/ceiling thresholds on the array's grid.
+Equality includes both complex components.
 Comparison output buffers are not yet supported. Because supported comparisons remain elementwise,
 membership checks between distinct arrays can still raise an ambiguous-truth
 error.
