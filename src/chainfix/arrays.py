@@ -282,6 +282,8 @@ class Array:
                for value in inputs + tuple(out for out in outputs if out is not None)):
             return NotImplemented
         if ufunc is np.add and method == "reduce":
+            # NumPy repeats an input passed as array=... in the keywords.
+            kwargs.pop("array", None)
             return _numpy_reduce(*inputs, **kwargs)
         if method != "__call__" or ufunc not in _UFUNCS:
             raise TypeError(f"NumPy {ufunc.__name__}.{method} is unsupported for fixed-point arrays")
@@ -838,21 +840,31 @@ def matmul(a, b, *, out=None, math: Math | None = None):
     return _matmul(a, b, out, math, "matmul")
 
 
-def _numpy_reduce(value, axis=0, keepdims=False, out=None, where=True, **unsupported):
-    # np.add.reduce defaults to axis 0, unlike np.sum.
+_ABSENT = object()
+
+
+def _numpy_options(dtype, initial, where):
+    # NumPy forwards explicitly passed defaults, so accept exactly those.
     if where is not True:
         raise TypeError("fixed-point reductions require where=True")
+    unsupported = [name for name, given in (("dtype", dtype is not None),
+                                            ("initial", initial is not _ABSENT)) if given]
     if unsupported:
         raise TypeError(f"unsupported fixed-point reduction keywords: {', '.join(unsupported)}")
-    return sum(value, axis, keepdims=keepdims, out=out)
 
 
-def _numpy_sum(value, axis=None, dtype=None, out=None, keepdims=False, **unsupported):
-    if dtype is not None:
-        unsupported["dtype"] = dtype
-    if unsupported:
-        raise TypeError(f"unsupported fixed-point reduction keywords: {', '.join(unsupported)}")
-    return sum(value, axis, keepdims=keepdims, out=out)
+# These adapters mirror NumPy's parameter names and order, so every positional
+# or keyword spelling NumPy accepts binds the same way here.
+def _numpy_reduce(array, axis=0, dtype=None, out=None, keepdims=False, initial=_ABSENT,
+                  where=True):
+    # np.add.reduce defaults to axis 0, unlike np.sum.
+    _numpy_options(dtype, initial, where)
+    return sum(array, axis, keepdims=keepdims, out=out)
+
+
+def _numpy_sum(a, axis=None, dtype=None, out=None, keepdims=False, initial=_ABSENT, where=True):
+    _numpy_options(dtype, initial, where)
+    return sum(a, axis, keepdims=keepdims, out=out)
 
 
 def _numpy_dot(a, b, out=None):

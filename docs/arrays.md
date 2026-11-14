@@ -312,8 +312,10 @@ is supported. `dtype`, `casting`, and other extra keywords are rejected.
 `np.sum`, `np.add.reduce`, `np.dot`, `np.matmul`, and `@` dispatch to the
 [reduction](#reductions) engine under the active context. `np.sum` reduces every
 axis by default and `np.add.reduce` the first, as in NumPy. They accept `axis`,
-`keepdims`, and `out` where NumPy does; `dtype`, `initial`, `where`, axis tuples,
-and `np.matmul`'s `axes` are rejected.
+`keepdims`, and `out` where NumPy does, by position or keyword. `dtype=None` and
+the literal Python `where=True` are accepted as NumPy's defaults; any other
+`dtype` or `where`, `initial`, axis tuples, and `np.matmul`'s `axes` are
+rejected.
 
 Other ufuncs, other ufunc methods such as `accumulate`/`at`/`outer` and
 `reduce` of anything but `np.add`, and other NumPy array functions fail

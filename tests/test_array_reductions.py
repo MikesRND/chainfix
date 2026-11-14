@@ -697,6 +697,39 @@ def test_unsupported_numpy_reduction_requests_fail_explicitly():
     assert np.sum(x, None, None, cfa.empty((), format=fmt())).raw.tolist() == 10
 
 
+def test_numpy_reductions_accept_every_default_spelling():
+    x = raw_array([[1, 2], [3, 4]], fmt())
+    # NumPy forwards explicitly passed defaults, repeats array= as a keyword,
+    # and turns a reduce's positional arguments into keywords.
+    for call in (lambda: np.sum(a=x), lambda: np.sum(x, dtype=None), lambda: np.sum(x, None, None),
+                 lambda: np.sum(x, where=True), lambda: np.sum(a=x, axis=None, dtype=None, out=None,
+                                                             keepdims=False, where=True)):
+        result = call()
+        assert result.raw.tolist() == 10 and result.format == fmt(10)
+    for call in (lambda: np.add.reduce(array=x), lambda: np.add.reduce(x, 0, None),
+                 lambda: np.add.reduce(x, dtype=None), lambda: np.add.reduce(x, where=True),
+                 lambda: np.add.reduce(x, 0, None, None, False),
+                 lambda: np.add.reduce(array=x, axis=0, dtype=None, out=None, keepdims=False,
+                                       where=True)):
+        result = call()
+        assert result.raw.tolist() == [4, 6] and result.format == fmt(9)
+    assert np.add.reduce(array=x, axis=1).raw.tolist() == np.add.reduce(x, 1).raw.tolist() == [3, 7]
+    assert np.sum(a=x, axis=1).raw.tolist() == np.sum(x, 1).raw.tolist() == [3, 7]
+    out = cfa.empty((2,), format=fmt())
+    assert np.add.reduce(x, 0, None, out) is out and np.sum(x, 0, None, out) is out
+    assert np.dot(a=x[0], b=x[1]).raw.tolist() == 11
+    for function in (np.sum, np.add.reduce):
+        for options in ({"dtype": np.int64}, {"dtype": "int64"}, {"initial": 0}, {"initial": None},
+                        {"where": False}, {"where": np.True_}, {"where": np.array([True, False])},
+                        {"where": 1}):
+            with pytest.raises(TypeError, match="keywords|where=True"):
+                function(x, **options)
+    with pytest.raises(TypeError, match="initial"):
+        np.sum(x, None, None, None, False, 0)
+    with pytest.raises(TypeError, match="dtype, initial"):
+        np.add.reduce(x, 0, np.int64, None, False, 0)
+
+
 # --- scalar reference and FIR-style fixture ----------------------------------
 
 def scalar_of(raw, format, complex):
