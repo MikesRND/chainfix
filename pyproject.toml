@@ -14,18 +14,43 @@ requires-python = ">=3.12"
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "Intended Audience :: Telecommunications Industry",
+    "Intended Audience :: Financial and Insurance Industry",
+    "Natural Language :: English",
     "Operating System :: OS Independent",
+    "Topic :: Scientific/Engineering",
     "Topic :: Scientific/Engineering :: Mathematics",
-    "Topic :: Office/Business :: Financial",
     "Topic :: Scientific/Engineering :: Electronic Design Automation (EDA)",
+    "Topic :: Communications",
+    "Topic :: Office/Business :: Financial",
+    "Topic :: Office/Business :: Financial :: Accounting",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Software Development :: Embedded Systems",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3 :: Only",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Programming Language :: Python :: 3.14",
     "Programming Language :: Python :: 3.15",
+    "Programming Language :: Python :: Implementation :: CPython",
 ]
-keywords = ["fixed-point", "binary fixed-point", "decimal fixed-point"]
+keywords = [
+    "fixed-point",
+    "binary fixed-point",
+    "decimal fixed-point",
+    "dsp",
+    "digital signal processing",
+    "rf",
+    "sdr",
+    "wireless communications",
+    "fpga",
+    "financial",
+    "blockchain",
+    "defi",
+    "smart contracts",
+    "solidity",
+]
 
 [project.optional-dependencies]
 arrays = ["numpy>=2.5"]

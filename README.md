@@ -5,6 +5,10 @@
 [![Coverage Status](https://img.shields.io/badge/coverage-93%25-brightgreen)](https://github.com/MikesRND/chainfix)
 [![Python Version](https://img.shields.io/badge/python-3.12%2B-blue)](https://github.com/MikesRND/chainfix)
 
+Chainfix brings fixed-point data types to Python for two kinds of application:
+binary (base-2) fixed point for digital signal processing (DSP), and decimal (base-10)
+fixed point for financial applications.
+
 Chainfix provides real and complex binary fixed-point arithmetic and exact decimal
 fixed-point construction, inspection, and comparison. The scalar package uses Python integers
 and has no NumPy dependency. The optional
