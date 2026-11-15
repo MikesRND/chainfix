@@ -1,23 +1,46 @@
 # Per:
 # https://packaging.python.org/guides/publishing-package-distribution-releases-using-github-actions-ci-cd-workflows/
 
-name: Publish chainfix to PyPI and TestPyPI
+name: Publish chainfix to PyPI
 
 on:
   release:
     types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag to publish, for example v0.2.0
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  id-token: write  # PyPI trusted publishing
 
 jobs:
   build-n-publish:
-    name: Publish chainfix to PyPI and TestPyPI
+    name: Publish chainfix to PyPI
     runs-on: ubuntu-latest
+    env:
+      RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.event.release.tag_name }}
 
     steps:
     - uses: actions/checkout@v4
+      with:
+        ref: refs/tags/${{ env.RELEASE_TAG }}
+
     - name: Set up Python 3.12
       uses: actions/setup-python@v5
       with:
         python-version: 3.12
+
+    - name: Check that the tag matches the package version
+      run: |
+        version=$(python -c "import re, pathlib; print(re.search(r\"^__version__ = '([^']+)'\", pathlib.Path('src/chainfix/__init__.py').read_text(), re.M).group(1))")
+        if [ "v$version" != "$RELEASE_TAG" ]; then
+          echo "::error::Tag $RELEASE_TAG does not match package version $version"
+          exit 1
+        fi
 
     - name: Install pypa/build
       run: >-
@@ -35,13 +58,5 @@ jobs:
         --outdir dist/
         .
 
-    - name: Publish chainfix distribution 📦 to Test PyPI
-      uses: pypa/gh-action-pypi-publish@release/v1
-      with:
-        password: ${{ secrets.TEST_PYPI_API_TOKEN }}
-        repository-url: https://test.pypi.org/legacy/
-
     - name: Publish chainfix distribution 📦 to PyPI
       uses: pypa/gh-action-pypi-publish@release/v1
-      with:
-        password: ${{ secrets.PYPI_API_TOKEN }}
