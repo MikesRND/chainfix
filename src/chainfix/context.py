@@ -15,8 +15,9 @@
 
 """Immutable fixed-point contexts and their execution-context scoping.
 
-A context holds construction defaults (word length and precision) and, for
-binary values, the arithmetic policy (``Math``). Contexts are final values:
+A context holds construction defaults (word length and precision) and a
+policy (``Math``) for rounding and overflow; binary contexts also bound
+arithmetic results. Contexts are final values:
 derive a changed one with ``replace()`` and activate it with
 ``set_*_context()`` or ``local_*_context()``. Each ``ContextVar`` binding is
 local to its execution context, so asyncio tasks and copied contexts can share
@@ -43,13 +44,14 @@ class _Context:
     a new object; no instance method writes a slot.
     """
 
-    __slots__ = ("wordlength", "precision")
+    __slots__ = ("wordlength", "precision", "math")
     wordlength: int
     precision: int
+    math: Math
 
     base: ClassVar[int]
-    _fields: ClassVar[tuple[str, ...]] = ("wordlength", "precision")
-    _settings: ClassVar[frozenset[str]] = frozenset(_fields)
+    _fields: ClassVar[tuple[str, ...]] = ("wordlength", "precision", "math")
+    _settings: ClassVar[frozenset[str]]
     _defaults: ClassVar[Mapping[str, object]]
 
     def __init_subclass__(cls, **kwargs):
@@ -68,7 +70,13 @@ class _Context:
 
     @classmethod
     def _fold(cls, current: Mapping[str, object], changes: dict) -> dict:
-        """Translate convenience settings into field values."""
+        """Fold individual policy settings into a new ``math`` value."""
+        if changes.keys().isdisjoint(_POLICY_FIELDS):
+            return changes
+        if "math" in changes:
+            raise ValueError("math cannot be combined with individual policy overrides")
+        overrides = {name: changes.pop(name) for name in _POLICY_FIELDS if name in changes}
+        changes["math"] = _replace_policy(current["math"], **overrides)
         return changes
 
     @classmethod
@@ -81,10 +89,17 @@ class _Context:
         if _integer(settings["wordlength"], "wordlength") < 1:
             raise ValueError("wordlength must be positive")
         _integer(settings["precision"], "precision")
+        if not isinstance(settings["math"], Math):
+            raise TypeError("math must be a Math")
+        cls._check_math(settings["math"])
         context = object.__new__(cls)
         for name in cls._fields:
             object.__setattr__(context, name, settings[name])
         return context
+
+    @classmethod
+    def _check_math(cls, math: Math) -> None:
+        """Reject policies this kind of context cannot apply."""
 
     def _current(self) -> dict:
         return {name: getattr(self, name) for name in self._fields}
@@ -101,6 +116,14 @@ class _Context:
         return self._build(self._current(), changes)
 
     __replace__ = replace  # copy.replace() on Python 3.13+
+
+    @property
+    def overflow(self) -> Overflow:
+        return self.math.overflow
+
+    @property
+    def rounding(self) -> Rounding:
+        return self.math.rounding
 
     def __setattr__(self, name, value):
         raise AttributeError(f"{type(self).__name__} is immutable; use replace()")
@@ -142,12 +165,10 @@ def _restore_context(cls, settings):
 class BinaryContext(_Context):
     """Binary construction defaults and arithmetic policy (final, immutable)."""
 
-    __slots__ = ("math",)
-    math: Math
+    __slots__ = ()
 
     base = 2
-    _fields = ("wordlength", "precision", "math")
-    _settings = frozenset((*_fields, *_POLICY_FIELDS))
+    _settings = frozenset(("wordlength", "precision", "math", *_POLICY_FIELDS))
     _defaults = MappingProxyType({"wordlength": 32, "precision": 16, "math": Math()})
 
     def __new__(cls, wordlength: int | None = None, precision: int | None = None,
@@ -160,43 +181,39 @@ class BinaryContext(_Context):
             "rounding": rounding, "overflow": overflow, "product": product,
             "sum": sum, "accumulator": accumulator}))
 
-    @classmethod
-    def _fold(cls, current: Mapping[str, object], changes: dict) -> dict:
-        if changes.keys().isdisjoint(_POLICY_FIELDS):
-            return changes
-        if "math" in changes:
-            raise ValueError("math cannot be combined with individual policy overrides")
-        overrides = {name: changes.pop(name) for name in _POLICY_FIELDS if name in changes}
-        changes["math"] = _replace_policy(current["math"], **overrides)
-        return changes
-
-    @classmethod
-    def _create(cls, settings: Mapping[str, object]) -> Self:
-        if not isinstance(settings["math"], Math):
-            raise TypeError("math must be a Math")
-        return super()._create(settings)
-
-    @property
-    def overflow(self) -> Overflow:
-        return self.math.overflow
-
-    @property
-    def rounding(self) -> Rounding:
-        return self.math.rounding
-
 
 @final
 class DecimalContext(_Context):
-    """Decimal construction defaults: word length and precision (final, immutable)."""
+    """Decimal construction defaults and conversion policy (final, immutable).
+
+    Decimal arithmetic is unsupported, so ``math`` must keep "full" result
+    boundaries; only its rounding and overflow apply, during construction.
+    """
 
     __slots__ = ()
 
     base = 10
-    _defaults = MappingProxyType({"wordlength": 256, "precision": 18})
+    _settings = frozenset(("wordlength", "precision", "math", "rounding", "overflow"))
+    _defaults = MappingProxyType({"wordlength": 256, "precision": 18, "math": Math()})
 
-    def __new__(cls, wordlength: int | None = None, precision: int | None = None) -> Self:
-        return cls._build(cls._defaults, cls._specified(
-            {"wordlength": wordlength, "precision": precision}))
+    def __new__(cls, wordlength: int | None = None, precision: int | None = None,
+                overflow: Overflow | str | None = None, *, math: Math | None = None,
+                rounding: Rounding | str | None = None) -> Self:
+        return cls._build(cls._defaults, cls._specified({
+            "wordlength": wordlength, "precision": precision, "math": math,
+            "rounding": rounding, "overflow": overflow}))
+
+    @classmethod
+    def _check_math(cls, math: Math) -> None:
+        if math.product != "full":
+            name = "product"
+        elif math.sum != "full":
+            name = "sum"
+        elif math.accumulator != "full":
+            name = "accumulator"
+        else:
+            return
+        raise ValueError(f"decimal values require {name}='full'")
 
 
 DefaultBinaryContext = BinaryContext()
@@ -267,15 +284,18 @@ def set_decimal_context(context: DecimalContext) -> None:
 
 @contextmanager
 def local_decimal_context(context: DecimalContext | None = None, *,
-                          wordlength: int | None = None,
-                          precision: int | None = None) -> Iterator[DecimalContext]:
+                          wordlength: int | None = None, precision: int | None = None,
+                          math: Math | None = None, rounding: Rounding | str | None = None,
+                          overflow: Overflow | str | None = None
+                          ) -> Iterator[DecimalContext]:
     """Activate a decimal context, optionally changed, until the block exits.
 
     The supplied context (or the active one) is unchanged; the previous binding
     is restored even when the block raises. Also usable as a decorator.
     """
-    scoped = _scoped(_decimal_context, DecimalContext, context,
-                     {"wordlength": wordlength, "precision": precision})
+    scoped = _scoped(_decimal_context, DecimalContext, context, {
+        "wordlength": wordlength, "precision": precision, "math": math,
+        "rounding": rounding, "overflow": overflow})
     token = _decimal_context.set(scoped)
     try:
         yield scoped

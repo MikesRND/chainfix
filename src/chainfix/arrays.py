@@ -44,6 +44,7 @@ except ModuleNotFoundError as error:
 from chainfix import _array_kernels as kernels
 from chainfix.binary import Fixb, Ufixb, _operand, _selected_math
 from chainfix.complex import CFixb
+from chainfix.fixed_point import _FixedPoint
 from chainfix.format import Format, _product_format, _sum_format, _unary_format
 from chainfix.policy import FixedPointOverflowError, Math
 
@@ -382,7 +383,7 @@ def _supports_operand(value):
 
 
 def _recognized_operand(value):
-    return isinstance(value, (Number, Decimal, list, tuple, np.ndarray, np.generic))
+    return isinstance(value, (Number, Decimal, _FixedPoint, list, tuple, np.ndarray, np.generic))
 
 
 def _comparison_dispatch(value):
@@ -462,8 +463,8 @@ def _scalar_operand(value):
         return value
     value = _operand(value)
     if value is NotImplemented:
-        raise TypeError("operands must be fixed-point arrays/scalars or integer constants; "
-                        "use array() or from_raw() for ndarrays")
+        raise TypeError("operands must be binary fixed-point arrays/scalars or integer "
+                        "constants; use array() or from_raw() for ndarrays")
     return value
 
 

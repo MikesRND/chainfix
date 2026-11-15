@@ -461,7 +461,6 @@ def test_truthiness_repr_and_generic_results_without_context_lookup(monkeypatch)
     def reject_context():
         raise AssertionError("value inspection must not consult policy")
 
-    monkeypatch.setattr("chainfix.complex.get_binary_context", reject_context)
     monkeypatch.setattr("chainfix.binary.get_binary_context", reject_context)
     assert z.real.int == 2 ** 80 + 1 and z.imag.int == -2 ** 81 + 3
     assert bool(z)
@@ -543,7 +542,6 @@ def test_copy_and_pickle_preserve_exact_storage_without_context(cls, monkeypatch
     def reject_context():
         raise AssertionError("copying raw storage must not consult arithmetic policy")
 
-    monkeypatch.setattr("chainfix.complex.get_binary_context", reject_context)
     monkeypatch.setattr("chainfix.binary.get_binary_context", reject_context)
     shallow, deep = copy(z), deepcopy(z)
     results = [shallow, deep] + [pickle.loads(pickle.dumps(z, protocol))

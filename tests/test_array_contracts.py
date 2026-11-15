@@ -36,7 +36,7 @@ COMPARISONS = (("equal", operator.eq), ("not_equal", operator.ne),
 @pytest.mark.parametrize("name,op", COMPARISONS)
 def test_unsupported_numeric_comparisons_raise_in_both_orders(name, op):
     x = cfa.array([0, 0.5, 1], format=fmt())
-    for constant in (0.5, Fraction(1, 2), Decimal("0.5"), 0.5 + 0j,
+    for constant in (0.5, Fraction(1, 2), Decimal("0.5"), cf.Fixd(0.5), 0.5 + 0j,
                      [0.5], (0.5,), np.float64(0.5), np.float32(0.5),
                      np.complex128(0.5), np.timedelta64(1, "ns"),
                      np.array(0.5), np.array([0.5])):
@@ -44,6 +44,10 @@ def test_unsupported_numeric_comparisons_raise_in_both_orders(name, op):
             for a, b in ((x, constant), (constant, x)):
                 with pytest.raises(TypeError):
                     function(a, b)
+    if op in (operator.eq, operator.ne):
+        # Decimal fixed-point values are fixed-point, but arrays are binary only.
+        with pytest.raises(TypeError, match="binary fixed-point"):
+            op(x, cf.Fixd(0.5))
     with pytest.raises(TypeError):
         np.where(x == 0.5, 1, 0)
 

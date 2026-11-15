@@ -1,4 +1,5 @@
 # Copyright 2021 PyDefi Development Team
+# Copyright 2026 PyDefi Development Team
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,55 +13,40 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Any
+"""Exact decimal fixed-point scalars: construction, inspection, and comparison.
 
-from chainfix.context import get_decimal_context
-from chainfix.fixed_point import _Fix
-from chainfix.fixed_point import _Ufix
-from chainfix.fixed_point import default_precision
-from chainfix.fixed_point import default_wordlength
-from chainfix.fixed_point import FromTypes
+A float converts as its exact binary value, rounded once, as ``decimal.Decimal``
+does; use ``Fraction("0.1")`` for an exact decimal literal. Decimal arithmetic is
+unsupported.
+"""
+
+from chainfix.context import DecimalContext, get_decimal_context
+from chainfix.fixed_point import _FixedPoint
+
+__all__ = ["Fixd", "Ufixd"]
 
 
-# --------------------------------------------------------------------------
-# Decimal Fixed Point Types
-# --------------------------------------------------------------------------
-
-class Fixd(_Fix):
-    """A Signed fixed point number (decimal scaled)."""
+class _Decimal(_FixedPoint):
+    __slots__ = ()
     _base = 10
+    # An explicit policy follows the same rule as a decimal context's.
+    _math_rule = DecimalContext._check_math
 
-    def __new__(cls,
-                value: FromTypes = 0,
-                wordlength: int = default_wordlength,
-                precision: int = default_precision
-                ) -> Any:
-        self = super().__new__(cls,
-                               value=value,
-                               wordlength=wordlength,
-                               precision=precision
-                               )
-        return self
-
-    def get_current_context(self):
+    @classmethod
+    def _current_context(cls):
+        # Look the getter up at call time so it can be patched in tests.
         return get_decimal_context()
 
 
-class Ufixd(_Ufix):
-    """An Unsigned fixed point number (decimal scaled)."""
-    _base = 10
+class Fixd(_Decimal):
+    """Signed decimal fixed-point scalar, with exact conversion."""
 
-    def __new__(cls,
-                value: FromTypes = 0,
-                wordlength: int = default_wordlength,
-                precision: int = default_precision
-                ) -> Any:
-        self = super().__new__(cls,
-                               value=value,
-                               wordlength=wordlength,
-                               precision=precision
-                               )
-        return self
+    __slots__ = ()
+    _signed = True
 
-    def get_current_context(self):
-        return get_decimal_context()
+
+class Ufixd(_Decimal):
+    """Unsigned decimal fixed-point scalar, with exact conversion."""
+
+    __slots__ = ()
+    _signed = False

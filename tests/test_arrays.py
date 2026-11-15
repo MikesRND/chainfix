@@ -374,7 +374,8 @@ def test_rejected_numpy_dispatch_and_operands():
                  lambda: np.equal(x, x, out=x)):
         with pytest.raises(TypeError):
             call()
-    for other in (np.array([1, 2]), [1, 2], 1.5, 1j, Fraction(1, 2), Decimal("1"), object()):
+    for other in (np.array([1, 2]), [1, 2], 1.5, 1j, Fraction(1, 2), Decimal("1"), cf.Fixd(1),
+                  object()):
         for operation in (operator.add, operator.sub, operator.mul):
             with pytest.raises(TypeError):
                 operation(x, other)

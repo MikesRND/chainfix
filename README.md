@@ -6,8 +6,8 @@
 [![Python Version](https://img.shields.io/badge/python-3.12%2B-blue)](https://github.com/pydefi/chainfix)
 [![License](https://img.shields.io/github/license/pydefi/chainfix)](https://github.com/pydefi/chainfix/blob/main/LICENSE)
 
-Chainfix provides real and complex binary fixed-point arithmetic and decimal
-fixed-point construction and inspection. The scalar package uses Python integers
+Chainfix provides real and complex binary fixed-point arithmetic and exact decimal
+fixed-point construction, inspection, and comparison. The scalar package uses Python integers
 and has no NumPy dependency. The optional [array interface](docs/arrays.md) adds
 NumPy storage, checked integer arithmetic, reusable output destinations, and
 ordered sum, dot, and matrix-product reductions.
@@ -61,8 +61,14 @@ two bytes in **decimal** fixed point format
 >>> from chainfix import * 
 >>> from math import pi
 >>> pid = Fixd(pi, wordlength=16, precision=4)
-Fixd(3.1416, 16, 4)
+>>> pid
+Fixd(Fraction('3.1416'), 16, 4)
+>>> print(pid)
+3.1416
 ```
+
+`str()` shows the exact decimal value. `repr()` is a constructor call that rebuilds
+the value exactly, so a value that is not exactly a float appears as a `Fraction`.
 
 The `.int` property returns the stored integer value:   
 
@@ -107,6 +113,22 @@ When `Fixd` stores a negative number, the MSB of the stored integer is always 1:
 '0x8548'
 ```
 
+Construction is exact and rounds once. A float converts as its exact binary value,
+the same way `decimal.Decimal(x)` does, so a float that looks like a decimal tie
+may not be one. Use a `Fraction` for an exact decimal literal:
+
+```python
+>>> Fixd(2.675, 16, 2).int  # the float is 2.67499999999999982236431605997495353221893310546875
+267
+>>> from fractions import Fraction
+>>> Fixd(Fraction("2.675"), 16, 2).int  # an exact tie, rounded to even
+268
+```
+
+Rounding and overflow come from the active decimal context (by default
+`nearest_even` and `raise`) or an explicit `math=` argument. Decimal values compare
+and hash exactly, with each other, with binary values, and with Python numbers.
+
 
 
 
@@ -117,6 +139,7 @@ two bytes in **binary** fixed point format
 
 ```python
 >>> pib = Fixb(pi, 16, 12)
+>>> pib
 Fixb(3.1416015625, 16, 12)
 ```
 
@@ -158,8 +181,9 @@ When `Fixb` is used to store a negative number, the MSB of the stored integer is
 
 # Contexts
 
-A context supplies the default `wordlength` and `precision` for new values and,
-for binary values, the arithmetic policy (`math`). Contexts are immutable: derive a
+A context supplies the default `wordlength` and `precision` for new values and a
+policy (`math`): its rounding and overflow apply during construction, and binary
+contexts also bound arithmetic results. Contexts are immutable: derive a
 changed one with `replace()` and activate it for a block or for the rest of the
 current execution context. There is no process-wide default to reconfigure.
 
@@ -191,7 +215,7 @@ when the block raises:
 ```python
 >>> with local_decimal_context(wordlength=20, precision=5):
 ...     Fixd(pi)
-Fixd(3.14159, 20, 5)
+Fixd(Fraction('3.14159'), 20, 5)
 ```
 
 Or install one for the rest of the current execution context:
@@ -199,12 +223,13 @@ Or install one for the rest of the current execution context:
 ```python
 >>> set_decimal_context(get_decimal_context().replace(wordlength=20, precision=5))
 >>> Fixd(pi)
-Fixd(3.14159, 20, 5)
+Fixd(Fraction('3.14159'), 20, 5)
 ```
 
 `local_binary_context`, `set_binary_context`, and `BinaryContext.replace()` work
 the same way and also accept policy settings such as `rounding="floor"` or
-`math=Math(...)`. Decimal contexts hold only `wordlength` and `precision`.
+`math=Math(...)`. Decimal contexts accept `rounding`, `overflow`, and `math`,
+which apply when decimal values are constructed, but not result boundaries.
 Assigning to a context attribute raises `AttributeError`.
 
 When passed through the constructor, the values for `wordlength` and `precision` always take precedence over the
@@ -213,7 +238,7 @@ context.
 ```python
 >>> with local_decimal_context(wordlength=20, precision=5):
 ...     Fixd(pi, precision=3)
-Fixd(3.142, 20, 3)
+Fixd(Fraction('3.142'), 20, 3)
 ```
 
 The explicit precision overrides the active context; its word length must still

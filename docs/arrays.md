@@ -111,14 +111,15 @@ binary fixed-point scalars, Python integers (including bool), or NumPy integer
 and boolean scalars. Integer constants use the scalar contract's minimal signed
 format at precision zero. Bare ndarray operands are ambiguous and rejected in
 both operand orders: use `array` for numeric values or `from_raw` for encodings.
-Lists, floats, Fraction, Decimal, and Python complex operands require explicit
-fixed-point construction to participate in fixed-point arithmetic/comparison.
+Lists, floats, Fraction, Decimal, Python complex, and decimal fixed-point
+(`Fixd`, `Ufixd`) operands require explicit binary fixed-point construction to
+participate in fixed-point arithmetic/comparison.
 
 Python operator methods allow foreign reflected dispatch with `NotImplemented`.
 Consequently `z == None` and `z == "raise"` return `False`, and the corresponding
 `!=` expressions return `True`. Equality with recognized unsupported numeric or
 sequence types instead raises `TypeError`, including floats, Fraction, Decimal,
-complex, lists, tuples, and bare ndarrays. Unsupported arithmetic such as
+complex, decimal fixed-point scalars, lists, tuples, and bare ndarrays. Unsupported arithmetic such as
 `z + 1.5` also raises `TypeError`. Explicit `cfa.*` functions reject unsupported
 operands, including sentinel equality comparisons.
 

@@ -81,8 +81,8 @@ constructor, and the 32-bit helpers require a 32-bit format.
 Inputs may be Python integers, finite floats, `fractions.Fraction`, or existing
 fixed-point scalars. Conversion uses exact integer ratios, including a float's
 `as_integer_ratio()`. It scales and rounds with integer quotient/remainder; no
-floating intermediate is used. Existing decimal scalars can be converted without
-changing decimal construction, inspection, or context behavior.
+floating intermediate is used. Decimal scalars convert exactly, including negative
+precision, and decimal construction follows the same rules under its own context.
 
 Boolean numeric inputs and arithmetic operands retain Python's integer semantics:
 `True` is 1 and `False` is 0; booleans remain invalid for format dimensions, raw
@@ -108,8 +108,11 @@ precision, and signedness and returns the corresponding generic binary scalar.
 `.int` exposes stored data. `int(value)`, comparisons, hashes, and
 `as_integer_ratio()` are exact; `int` truncates toward zero. `.value`, `float`, and
 the numeric bound properties provide floating approximations and may overflow
-when converting values beyond the floating-point range. `.bin`, `.hex`, `.lsb`,
-`.wordlength`, `.precision`, `.signed`, and `.base` remain available.
+when converting values beyond the floating-point range. `str(value)` is the exact
+decimal value, and `repr(value)` is a constructor call that rebuilds the value
+exactly under any context: the shortest float literal when the value is exactly a
+float, otherwise a `Fraction`. `.bin`, `.hex`, `.lsb`, `.wordlength`, `.precision`,
+`.signed`, and `.base` remain available.
 
 Arithmetic operands may be binary fixed-point scalars or Python integer constants.
 Each integer constant uses a minimal signed format at precision zero, including
@@ -119,8 +122,9 @@ return `NotImplemented` so Python can try the reflected operation. The optional
 [array adapter](arrays.md) accepts NumPy integer constants in array operations;
 the scalar core itself remains independent of NumPy.
 
-Comparison supports binary scalars, integers, floats, `Fraction`, and
-`decimal.Decimal` using exact values, without consulting arithmetic policy.
+Comparison supports binary and decimal fixed-point scalars, integers, floats,
+`Fraction`, and `decimal.Decimal` using exact values, without consulting
+arithmetic policy.
 Equality also supports Python complex numbers; ordering against complex numbers
 is unsupported. Hashes follow the exact rational value, so equal supported numeric
 values have equal hashes even when they are not exactly representable as floats.
@@ -321,9 +325,12 @@ On any version, `executor.submit(contextvars.copy_context().run, fn)` runs `fn`
 with the caller's context. Explicit `math=` arguments never consult a context.
 
 `DecimalContext`, `get_decimal_context`, `set_decimal_context`, and
-`local_decimal_context` follow the same rules. A decimal context holds only
-`wordlength` and `precision` (its `base` is 10): decimal construction applies no
-rounding or overflow policy, so decimal contexts accept none.
+`local_decimal_context` follow the same rules. A decimal context's `base` is 10.
+Its `rounding` and `overflow` apply when decimal values are constructed; it does
+not accept `product`, `sum`, or `accumulator` settings, and its `math` must keep
+`"full"` boundaries, because decimal arithmetic is unsupported. An explicit
+`math=` argument to a decimal constructor follows the same rule. The default
+decimal policy is `nearest_even` with `raise`.
 
 ## Compatibility and deferred work
 
@@ -333,9 +340,12 @@ affect construction and conversion consistently. Exact conversion corrects
 floating-intermediate inaccuracies. Binary equality and hashing now reflect
 numeric values rather than object identity. Contexts are immutable, so the setters
 install the supplied context instead of copying it, and the default contexts can no
-longer be reconfigured process-wide. Decimal contexts no longer carry the overflow
-setting that decimal construction never applied. Decimal construction behavior is
-otherwise preserved, including unsupported arithmetic.
+longer be reconfigured process-wide. Decimal construction is exact: a float
+converts as its exact binary value and rounds once under the decimal context's
+policy, as `decimal.Decimal` does, and out-of-range values raise
+`FixedPointOverflowError`. Decimal values compare and hash by value; decimal
+arithmetic remains unsupported. `str()` and `repr()` no longer pass through a
+float, so they are exact for both bases and work beyond the floating-point range.
 
 [Arrays and the supported NumPy dispatch subset](arrays.md) are available through
 the optional arrays extra, including ordered sum, dot, and matrix-product
