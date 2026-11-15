@@ -18,12 +18,8 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from decimal import Decimal
-from fractions import Fraction
-import operator
-from typing import Self
 
-from chainfix._exact import overflow_raw, quantize_raw, scaled_ratio, convert_ratio, value_ratio
+from chainfix._exact import overflow_raw, quantize_raw
 from chainfix.context import get_binary_context
 from chainfix.fixed_point import _FixedPoint
 from chainfix.format import (
@@ -46,109 +42,17 @@ def _selected_math(math: Math | None) -> Math:
 class _Binary(_FixedPoint):
     __slots__ = ()
     _base = 2
-    _fixed_wordlength = None
-
-    def __new__(cls, value: int | float | Fraction | _FixedPoint = 0,
-                wordlength: int | None = None, precision: int | None = None, *,
-                format: Format | None = None, math: Math | None = None) -> Self:
-        if format is not None:
-            if wordlength is not None or precision is not None:
-                raise ValueError("format cannot be combined with wordlength or precision")
-        else:
-            context = get_binary_context()
-            format = Format(base=2, signed=cls._signed,
-                            wordlength=wordlength if wordlength is not None else context.wordlength,
-                            precision=precision if precision is not None else context.precision)
-        cls._validate_format(format)
-        policy = _selected_math(math)
-        raw = convert_ratio(*value_ratio(value), format, policy)
-        return cls._from_raw(raw, format)
 
     @classmethod
-    def _validate_format(cls, format: Format) -> None:
-        _binary_format(format)
-        if format.signed != cls._signed:
-            raise ValueError(f"format signedness is incompatible with {cls.__name__}")
-        if cls._fixed_wordlength is not None and format.wordlength != cls._fixed_wordlength:
-            raise ValueError(f"{cls.__name__} requires {cls._fixed_wordlength} bits")
-
-    @classmethod
-    def _from_raw(cls, raw: int, format: Format) -> Self:
-        # Internal only: the caller has already validated format and raw range.
-        self = object.__new__(cls)
-        self._int = raw
-        self._wordlength = format.wordlength
-        self._precision = format.precision
-        return self
-
-    @classmethod
-    def from_raw(cls, raw: int, *, format: Format) -> Self:
-        """Construct from an encoded integer, strictly checking its range."""
-        cls._validate_format(format)
-        raw = _integer(raw, "raw")
-        return cls._from_raw(overflow_raw(raw, format, Overflow.RAISE), format)
-
-    @property
-    def format(self) -> Format:
-        return Format(base=2, signed=self.signed, wordlength=self.wordlength,
-                      precision=self.precision)
+    def _current_context(cls):
+        # Look the getter up at call time so it can be patched in tests.
+        return get_binary_context()
 
     def quantize(self, format: Format, *, math: Math | None = None) -> Fixb | Ufixb:
         """Convert to a format, rounding before checking overflow."""
         _binary_format(format)
         raw = quantize_raw(self.int, self.precision, format, _selected_math(math))
         return _result(raw, format)
-
-    def get_current_context(self):
-        return get_binary_context()
-
-    def as_integer_ratio(self) -> tuple[int, int]:
-        return Fraction(*scaled_ratio(self.int, self.precision)).as_integer_ratio()
-
-    @property
-    def value(self) -> float:
-        return float(Fraction(*self.as_integer_ratio()))
-
-    @property
-    def lower_bound(self) -> float:
-        return float(Fraction(*scaled_ratio(self.min_int, self.precision)))
-
-    @property
-    def upper_bound(self) -> float:
-        return float(Fraction(*scaled_ratio(self.max_int, self.precision)))
-
-    def __int__(self) -> int:
-        return int(Fraction(*self.as_integer_ratio()))
-
-    def __hash__(self) -> int:
-        return hash(Fraction(*self.as_integer_ratio()))
-
-    def _compare(self, other, operation):
-        if isinstance(other, _Binary):
-            other = Fraction(*other.as_integer_ratio())
-        elif not isinstance(other, (int, float, Fraction, Decimal, complex)):
-            return NotImplemented
-        if isinstance(other, complex) and operation not in (operator.eq, operator.ne):
-            return NotImplemented
-        return operation(Fraction(*self.as_integer_ratio()), other)
-
-    def __eq__(self, other):
-        return self._compare(other, operator.eq)
-
-    def __ne__(self, other):
-        return self._compare(other, operator.ne)
-
-    def __lt__(self, other):
-        return self._compare(other, operator.lt)
-
-    def __le__(self, other):
-        return self._compare(other, operator.le)
-
-    def __gt__(self, other):
-        return self._compare(other, operator.gt)
-
-    def __ge__(self, other):
-        return self._compare(other, operator.ge)
 
     def __add__(self, other):
         return _binary_operation(self, other, "add")

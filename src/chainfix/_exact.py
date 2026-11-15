@@ -12,34 +12,16 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Unbounded integer conversion helpers for the binary scalar engine."""
+"""Unbounded integer conversion helpers for the exact scalar engine."""
 
-from fractions import Fraction
-from math import isfinite
-
-from chainfix.fixed_point import _FixedPoint
 from chainfix.format import Format
 from chainfix.policy import FixedPointOverflowError, Math, Overflow, Rounding
 
 
-def scaled_ratio(raw: int, precision: int, base: int = 2) -> tuple[int, int]:
+def scaled_ratio(raw: int, precision: int, base: int) -> tuple[int, int]:
     if precision >= 0:
         return raw, base ** precision
     return raw * base ** -precision, 1
-
-
-def value_ratio(value: int | float | Fraction | _FixedPoint) -> tuple[int, int]:
-    if isinstance(value, _FixedPoint):
-        return scaled_ratio(value.int, value.precision, value.base)
-    if isinstance(value, int):
-        return int(value), 1
-    if isinstance(value, Fraction):
-        return value.numerator, value.denominator
-    if isinstance(value, float):
-        if not isfinite(value):
-            raise ValueError("fixed-point inputs must be finite")
-        return value.as_integer_ratio()
-    raise TypeError("value must be an integer, finite float, Fraction, or fixed-point value")
 
 
 def round_ratio(numerator: int, denominator: int, rounding: Rounding) -> int:
@@ -74,10 +56,17 @@ def overflow_raw(raw: int, format: Format, overflow: Overflow) -> int:
 
 
 def convert_ratio(numerator: int, denominator: int, format: Format, math: Math) -> int:
-    if format.precision >= 0:
-        numerator <<= format.precision
+    """Scale an exact ratio into a format, rounding once before checking overflow."""
+    if format.base == 2:
+        # Shifts keep the common binary path fast.
+        if format.precision >= 0:
+            numerator <<= format.precision
+        else:
+            denominator <<= -format.precision
+    elif format.precision >= 0:
+        numerator *= format.base ** format.precision
     else:
-        denominator <<= -format.precision
+        denominator *= format.base ** -format.precision
     return overflow_raw(round_ratio(numerator, denominator, math.rounding), format, math.overflow)
 
 

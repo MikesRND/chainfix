@@ -34,7 +34,10 @@ def test_distribution_metadata():
     assert metadata.get_all("Requires-Dist") == ['numpy>=2.5; extra == "arrays"']
 
 
-@pytest.mark.parametrize("entry", ("chainfix", "chainfix.binary", "chainfix.complex"))
+@pytest.mark.parametrize("entry", ("chainfix", "chainfix.binary", "chainfix.complex",
+                                   "chainfix.decimal", "chainfix.helpers",
+                                   "chainfix.fixed_point", "chainfix._exact",
+                                   "chainfix.context"))
 def test_core_import_is_numpy_independent(entry):
     # A fresh isolated interpreter catches transitive imports as well as direct ones.
     subprocess.run(

@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Immutable binary arithmetic policies; values never carry a policy."""
+"""Immutable fixed-point arithmetic policies; values never carry a policy."""
 
 from dataclasses import dataclass
 from enum import Enum

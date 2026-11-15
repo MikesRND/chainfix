@@ -22,11 +22,11 @@ from fractions import Fraction
 import sys
 from typing import Self
 
-from chainfix._exact import convert_ratio, overflow_raw, quantize_raw, scaled_ratio, value_ratio
+from chainfix._exact import convert_ratio, overflow_raw, quantize_raw, scaled_ratio
 from chainfix.binary import (
-    Fixb, Ufixb, _Binary, _operand, _result, _selected_math,
+    Fixb, Ufixb, _operand, _result, _selected_math,
 )
-from chainfix.context import get_binary_context
+from chainfix.fixed_point import _FixedPoint, value_ratio
 from chainfix.format import Format, _binary_format, _integer, _product_format, _sum_format, _unary_format
 from chainfix.policy import Math, Overflow
 
@@ -74,19 +74,12 @@ class CFixb:
                 format: Format | None = None, math: Math | None = None) -> Self:
         if value is not _OMITTED and (real is not _OMITTED or imag is not _OMITTED):
             raise ValueError("value cannot be combined with real or imag")
-        if format is not None:
-            if wordlength is not None or precision is not None:
-                raise ValueError("format cannot be combined with wordlength or precision")
-        else:
-            context = get_binary_context()
-            format = Format(base=2, signed=True,
-                            wordlength=wordlength if wordlength is not None else context.wordlength,
-                            precision=precision if precision is not None else context.precision)
+        # Components share Fixb's construction settings, so the context is read once.
+        format, policy = Fixb._settings(wordlength, precision, format, math)
         _complex_format(format)
-        policy = _selected_math(math)
         if isinstance(value, CFixb):
-            i_ratio = scaled_ratio(value._i, value.format.precision)
-            q_ratio = scaled_ratio(value._q, value.format.precision)
+            i_ratio = scaled_ratio(value._i, value.format.precision, 2)
+            q_ratio = scaled_ratio(value._q, value.format.precision, 2)
         else:
             if isinstance(value, complex):
                 real, imag = value.real, value.imag
@@ -156,7 +149,7 @@ class CFixb:
     def __eq__(self, other):
         if isinstance(other, (CFixb, complex)):
             return self.real == other.real and self.imag == other.imag
-        if isinstance(other, (_Binary, int, float, Fraction, Decimal)):
+        if isinstance(other, (_FixedPoint, int, float, Fraction, Decimal)):
             return self._q == 0 and self.real == other
         return NotImplemented
 

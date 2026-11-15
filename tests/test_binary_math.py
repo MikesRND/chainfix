@@ -65,7 +65,7 @@ def oracle_round(value, mode):
 
 
 def oracle_raw(value, format, rounding, overflow):
-    raw = oracle_round(value * Fraction(2) ** format.precision, rounding)
+    raw = oracle_round(value * Fraction(format.base) ** format.precision, rounding)
     low = -(2 ** (format.wordlength - 1)) if format.signed else 0
     high = 2 ** (format.wordlength - int(format.signed)) - 1
     if low <= raw <= high:
@@ -230,8 +230,7 @@ def test_exact_large_construction_conversion_and_hashing():
     assert cf.Fixb(y, 84, 3).int == y.int
     assert cf.Ufixb(y, 84, 3).int == y.int
     assert cf.Fixb(cf.Fixd(0.125, 16, 3), 16, 3).int == 1
-    # Existing decimal inspection is unchanged; binary construction still reads
-    # an existing decimal's negative precision exactly from its stored data.
+    # Binary construction reads a decimal value exactly, including negative precision.
     decimal = cf.Fixd(100, 16, -2)
     assert cf.Fixb(decimal, 16, 0) == 100
 
@@ -240,7 +239,8 @@ def test_exact_large_construction_conversion_and_hashing():
                                    Fraction(-3, 8), Fraction(2 ** 60 + 1)])
 def test_exact_numeric_comparison_and_hash(value):
     x = cf.Fixb(value, 80, 3)
-    equal = [value, cf.Fixb(value, 90, 6), Decimal(value.numerator) / Decimal(value.denominator)]
+    equal = [value, cf.Fixb(value, 90, 6), cf.Fixd(value, 80, 3),
+             Decimal(value.numerator) / Decimal(value.denominator)]
     if value.denominator == 1:
         equal.append(value.numerator)
     if Fraction(float(value)) == value:
@@ -403,7 +403,7 @@ def test_no_policy_on_values_and_independent_operation_boundaries():
         assert (x * 2).format == target
     assert x.quantize(fmt(8, 1)).int == 1  # direct conversion gives 0.5
     assert (product + 0).precision == 2  # policy did not travel with product
-    for value in (x, product, +cf.Fixb32(0)):
+    for value in (x, product, +cf.Fixb32(0), cf.Fixd(0), cf.Fixd32(0)):
         assert not hasattr(value, "math")
         with pytest.raises(AttributeError):
             value.math = bounded
@@ -497,5 +497,5 @@ def test_binary_inspection_preserves_existing_surface():
     assert x.bin == "0b1111111111111010"
     assert x.hex == "0xfffa"
     assert x.lsb == 0.25
-    assert x.get_current_context() is cf.get_binary_context()
+    assert not hasattr(x, "get_current_context")
     assert x.base == 2 and x.signed is True

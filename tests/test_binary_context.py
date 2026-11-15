@@ -201,32 +201,40 @@ def test_context_validation_and_conflicting_overrides(configured):
     assert (configured.wordlength, configured.precision, configured.math) == snapshot
 
 
-def test_decimal_contexts_hold_only_construction_sizes():
+def test_decimal_contexts_carry_a_conversion_policy():
     assert DefaultBinaryContext.overflow is cf.Overflow.RAISE
     assert (DefaultDecimalContext.wordlength, DefaultDecimalContext.precision) == (256, 18)
+    assert DefaultDecimalContext.math == cf.Math()
+    assert DefaultDecimalContext.overflow is cf.Overflow.RAISE
     assert (cf.BinaryContext.base, cf.DecimalContext.base) == (2, 10)
-    for attr in ("math", "overflow", "rounding"):
-        assert not hasattr(DefaultDecimalContext, attr)
-    decimal = cf.DecimalContext(20, 3)
-    changed = decimal.replace(precision=1)
-    assert (changed.wordlength, changed.precision) == (20, 1)
+    decimal = cf.DecimalContext(20, 3, cf.Overflow.WRAP)
+    assert (decimal.wordlength, decimal.precision, decimal.overflow) == (20, 3, cf.Overflow.WRAP)
+    changed = decimal.replace(precision=1, rounding="floor")
+    assert (changed.precision, changed.rounding, changed.overflow) == (
+        1, cf.Rounding.FLOOR, cf.Overflow.WRAP)
     assert decimal.precision == 3
-    # Decimal construction never applied a policy, so decimal contexts take none.
-    with pytest.raises(TypeError):
-        cf.DecimalContext(20, 3, cf.Overflow.WRAP)
-    for name, value in (("overflow", "wrap"), ("rounding", "floor"), ("math", cf.Math()),
-                        ("product", format_at(2))):
+    assert decimal.replace(math=cf.Math()).overflow is cf.Overflow.RAISE
+    with pytest.raises(ValueError):
+        cf.DecimalContext(math=cf.Math(), rounding="floor")
+    # Decimal arithmetic is unsupported, so result boundaries are not settings.
+    for name in ("product", "sum", "accumulator"):
         with pytest.raises(TypeError):
-            cf.DecimalContext(**{name: value})
+            cf.DecimalContext(**{name: format_at(2)})
         with pytest.raises(TypeError, match="unknown context setting"):
-            decimal.replace(**{name: value})
+            decimal.replace(**{name: format_at(2)})
         with pytest.raises(TypeError):
-            with cf.local_decimal_context(**{name: value}):
+            with cf.local_decimal_context(**{name: format_at(2)}):
                 pass
+        with pytest.raises(ValueError, match="full"):
+            cf.DecimalContext(math=cf.Math(**{name: format_at(2)}))
+        with pytest.raises(ValueError, match="full"):
+            decimal.replace(math=cf.Math(**{name: format_at(2)}))
     with pytest.raises(ValueError):
         cf.DecimalContext(wordlength=0)
     with pytest.raises(TypeError):
         cf.Ufixd(3.1) + cf.Ufixd(3.3)
-    with pytest.raises(ValueError) as error:
+    with pytest.raises(cf.FixedPointOverflowError) as error:
         cf.Fixd(1000, 8, 0)
-    assert type(error.value) is ValueError
+    assert isinstance(error.value, ValueError)
+    with cf.local_decimal_context(overflow="saturate"):
+        assert cf.Fixd(1000, 8, 0).int == 127
