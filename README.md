@@ -4,7 +4,6 @@
 [![CI](https://github.com/MikesRND/chainfix/actions/workflows/tox.yml/badge.svg)](https://github.com/MikesRND/chainfix/actions/workflows/tox.yml)
 [![Coverage Status](https://img.shields.io/badge/coverage-93%25-brightgreen)](https://github.com/MikesRND/chainfix)
 [![Python Version](https://img.shields.io/badge/python-3.12%2B-blue)](https://github.com/MikesRND/chainfix)
-[![License](https://img.shields.io/github/license/MikesRND/chainfix)](https://github.com/MikesRND/chainfix/blob/main/LICENSE)
 
 Chainfix provides real and complex binary fixed-point arithmetic and exact decimal
 fixed-point construction, inspection, and comparison. The scalar package uses Python integers
