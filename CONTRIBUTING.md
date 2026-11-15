@@ -98,3 +98,12 @@ Please, this means `bump-minor-pre-major: true` and
 
 Follow the installation and testing instructions in [README.md](README.md).
 Include the commands run, results, and any limitations in your PR description.
+
+## Licensing
+
+Contributions are accepted under the Apache License 2.0, as described in Section 5
+of [LICENSE](LICENSE). Source files do not need license headers.
+
+If you copy code from another project, keep its copyright and license notices,
+add its license text to `license-files` in `pyproject.toml`, and update the
+`license` expression to cover both licenses.

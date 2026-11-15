@@ -1,15 +1,16 @@
 # Welcome to Chainfix
-![chainfix](https://github.com/pydefi/chainfix/raw/main/docs/logo/chainfix_logo.png)
+![chainfix](https://github.com/MikesRND/chainfix/raw/main/docs/logo/chainfix_logo.png)
 
-[![CI](https://github.com/pydefi/chainfix/actions/workflows/tox.yml/badge.svg)](https://github.com/pydefi/chainfix/actions/workflows/tox.yml)
-[![Coverage Status](https://img.shields.io/badge/coverage-93%25-brightgreen)](https://github.com/pydefi/chainfix)
-[![Python Version](https://img.shields.io/badge/python-3.12%2B-blue)](https://github.com/pydefi/chainfix)
-[![License](https://img.shields.io/github/license/pydefi/chainfix)](https://github.com/pydefi/chainfix/blob/main/LICENSE)
+[![CI](https://github.com/MikesRND/chainfix/actions/workflows/tox.yml/badge.svg)](https://github.com/MikesRND/chainfix/actions/workflows/tox.yml)
+[![Coverage Status](https://img.shields.io/badge/coverage-93%25-brightgreen)](https://github.com/MikesRND/chainfix)
+[![Python Version](https://img.shields.io/badge/python-3.12%2B-blue)](https://github.com/MikesRND/chainfix)
+[![License](https://img.shields.io/github/license/MikesRND/chainfix)](https://github.com/MikesRND/chainfix/blob/main/LICENSE)
 
 Chainfix provides real and complex binary fixed-point arithmetic and exact decimal
 fixed-point construction, inspection, and comparison. The scalar package uses Python integers
-and has no NumPy dependency. The optional [array interface](docs/arrays.md) adds
-NumPy storage, checked integer arithmetic, reusable output destinations, and
+and has no NumPy dependency. The optional
+[array interface](https://github.com/MikesRND/chainfix/blob/main/docs/arrays.md)
+adds NumPy storage, checked integer arithmetic, reusable output destinations, and
 ordered sum, dot, and matrix-product reductions.
 
 ```python
@@ -28,8 +29,9 @@ with cf.local_binary_context(math=dsp):
 
 Values carry their format; arithmetic follows the active scope or an explicit
 `math=` argument. Defaults are nearest-even rounding and raise on overflow.
-See [binary arithmetic](docs/binary-arithmetic.md) for conversion rules, growth,
-scopes, supported operators, and compatibility notes.
+See
+[binary arithmetic](https://github.com/MikesRND/chainfix/blob/main/docs/binary-arithmetic.md)
+for conversion rules, growth, scopes, supported operators, and compatibility notes.
 
 Complex scalars share one signed format for their real and imaginary components:
 
@@ -40,8 +42,9 @@ power = z.mag2()  # exact squares and sum, then one sum-policy boundary
 assert z.real.int == 8192 and z.imag.int == 4096
 ```
 
-See [complex arithmetic](docs/binary-arithmetic.md#complex-scalars) for exact
-component construction, mixed real/complex arithmetic, and growth rules.
+See
+[complex arithmetic](https://github.com/MikesRND/chainfix/blob/main/docs/binary-arithmetic.md#complex-scalars)
+for exact component construction, mixed real/complex arithmetic, and growth rules.
 
 Fixed-point data types are used in a wide range of computing applications. 
 Binary-fixed point types are commonly used in the design of specialized hardware, 
@@ -51,15 +54,61 @@ Decimal-fixed point types are commonly found in financial applications, blockcha
 decentralized finance, and smart contracts
 (e.g. the [solidity programming language](https://docs.soliditylang.org/)).
 
+# Binary fixed-point representations
+
+The real-world value &pi; can be represented with limited precision using
+two bytes in **binary** fixed point format
+
+```python
+>>> from chainfix import *
+>>> from math import pi
+>>> pib = Fixb(pi, 16, 12)
+>>> pib
+Fixb(3.1416015625, 16, 12)
+```
+
+The `.int` property returns the stored integer value:   
+
+```python
+>>> pib.int
+12868
+```
+
+The resolution of the binary fixed-point data type is `2 ** -precision`, which
+is also the value of one least significant bit:
+
+```python
+>>> pib.lsb
+0.000244140625
+```
+
+The range of numbers that can be represented with this precision using 16 bits is:
+
+```python
+>>> (pib.lower_bound, pib.upper_bound)
+(-8.0, 7.999755859375)
+```
+
+The `.hex` property returns the two's complement representation of the stored integer
+
+```python
+>>> pib.hex
+'0x3244'
+```
+
+When `Fixb` is used to store a negative number, the MSB of the stored integer is always 1: 
+
+```python
+>>> Fixb(-pi, 16, 4).hex
+'0xffce'
+```
 
 # Decimal fixed-point representations
 
-The real-world value &pi; can be represented with limited precision using 
+Likewise, &pi; can also be represented with limited precision using
 two bytes in **decimal** fixed point format
 
 ```python
->>> from chainfix import * 
->>> from math import pi
 >>> pid = Fixd(pi, wordlength=16, precision=4)
 >>> pid
 Fixd(Fraction('3.1416'), 16, 4)
@@ -128,56 +177,6 @@ may not be one. Use a `Fraction` for an exact decimal literal:
 Rounding and overflow come from the active decimal context (by default
 `nearest_even` and `raise`) or an explicit `math=` argument. Decimal values compare
 and hash exactly, with each other, with binary values, and with Python numbers.
-
-
-
-
-# Binary fixed-point representations
-
-Likewise, &pi; can also be represented with limited precision using 
-two bytes in **binary** fixed point format
-
-```python
->>> pib = Fixb(pi, 16, 12)
->>> pib
-Fixb(3.1416015625, 16, 12)
-```
-
-The `.int` property returns the stored integer value:   
-
-```python
->>> pib.int
-12868
-```
-
-The resolution of the binary fixed-point data type is `2 ** -precision`, which
-is also the value of one least significant bit:
-
-```python
->>> pib.lsb
-0.000244140625
-```
-
-The range of numbers that can be represented with this precision using 16 bits is:
-
-```python
->>> (pib.lower_bound, pib.upper_bound)
-(-8.0, 7.999755859375)
-```
-
-The `.hex` property returns the two's complement representation of the stored integer
-
-```python
->>> pib.hex
-'0x3244'
-```
-
-When `Fixb` is used to store a negative number, the MSB of the stored integer is always 1: 
-
-```python
->>> Fixb(-pi, 16, 4).hex
-'0xffce'
-```
 
 # Contexts
 
@@ -255,13 +254,15 @@ Decimal arithmetic and division remain unsupported.
 
 # Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for PR titles, squash merging, and release
-policy.
+See [CONTRIBUTING.md](https://github.com/MikesRND/chainfix/blob/main/CONTRIBUTING.md)
+for PR titles, squash merging, and release policy.
 
 ## Package Installation
 
 Python 3.12 or newer is required. The scalar package has no runtime dependencies.
-The optional [array interface](docs/arrays.md) requires NumPy >=2.5:
+The optional
+[array interface](https://github.com/MikesRND/chainfix/blob/main/docs/arrays.md)
+requires NumPy >=2.5:
 
 ```bash
 pip install 'chainfix[arrays]'
@@ -308,3 +309,7 @@ nonumpy verifies scalar independence and the missing-array-dependency message.
 Array test modules skip collection when NumPy is absent. CI uploads each
 environment's coverage with a distinct flag, which Codecov combines for the commit.
 
+# License
+
+Copyright 2021-2026 MikesRND. Licensed under the
+[Apache License, Version 2.0](https://github.com/MikesRND/chainfix/blob/main/LICENSE).

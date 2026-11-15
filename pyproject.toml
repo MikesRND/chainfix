@@ -1,23 +1,25 @@
 [build-system]
-requires = ["setuptools>=61.0", "wheel"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "chainfix"
 dynamic = ["version"]
-authors = [{name = "PyDefi Development Team", email = "MikesRND@users.noreply.github.com"}]
+authors = [{name = "MikesRND", email = "MikesRND@users.noreply.github.com"}]
 description = "Fixed-point data types for signal processing and blockchain applications"
 readme = "README.md"
-license = {file = "LICENSE"}
+license = "Apache-2.0"
+license-files = ["LICENSE"]
 requires-python = ">=3.12"
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
-    "License :: OSI Approved :: Apache Software License",    
+    "Operating System :: OS Independent",
     "Topic :: Scientific/Engineering :: Mathematics",
     "Topic :: Office/Business :: Financial",
     "Topic :: Scientific/Engineering :: Electronic Design Automation (EDA)",
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Programming Language :: Python :: 3.14",
@@ -29,9 +31,11 @@ keywords = ["fixed-point", "binary fixed-point", "decimal fixed-point"]
 arrays = ["numpy>=2.5"]
 
 [project.urls]
-Homepage = "https://github.com/pydefi/chainfix"
-Repository = "https://github.com/pydefi/chainfix"
-Issues = "https://github.com/pydefi/chainfix/issues"
+Homepage = "https://github.com/MikesRND/chainfix"
+Documentation = "https://github.com/MikesRND/chainfix/tree/main/docs"
+Repository = "https://github.com/MikesRND/chainfix"
+Issues = "https://github.com/MikesRND/chainfix/issues"
+Changelog = "https://github.com/MikesRND/chainfix/releases"
 
 [tool.setuptools.packages.find]
 where = ["src"]
