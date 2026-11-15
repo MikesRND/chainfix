@@ -84,9 +84,7 @@ release, applying the highest applicable bump once:
 | Other changes without a break | No automatic release requirement | Maintainer decides |
 
 Mark breaking changes even before 1.0. Multiple breaking or feature PRs can belong
-to one release; do not increment the version for each PR. The planned runtime
-baseline and first arithmetic release target 0.2.0 at the agreed release boundary.
-Include relevant fixes in the release notes even when their squash commit has
+to one release; do not increment the version for each PR. Include relevant fixes in the release notes even when their squash commit has
 another primary type.
 
 If release automation is introduced later, preserve these rules. For Release
